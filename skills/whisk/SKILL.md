@@ -25,6 +25,12 @@ it run rather than splitting it up. Lanes, topics, later and waiting are
 Whisk's own views and cover the synced mail. When a read fails, the error says
 why.
 
+The human can keep some mail private from agents. If `whisk status` says this
+login can't see private mail, those threads do not exist for you: lists and
+searches leave them out and their ids read as unknown. When you can't find
+something the human expects, say it may be private rather than that it does
+not exist. What is private is theirs to decide; leave it to them.
+
 Whenever you send mail whose answer the work is waiting on, subscribe in the
 same step, so the reply wakes this session instead of you polling, sleeping or
 leaving the human to tell you it came. `whisk subscribe <thread-id>` watches
@@ -91,6 +97,11 @@ whisk filters; whisk filter edit|pause|resume|rm <id>; whisk filter run <id> --y
 
 # Whisk's memory about the human (voice, contacts, filing rules, preferences)
 whisk memories; whisk memory add "Prefers short replies" [--contact ada@x.org]; whisk memory rm <id>
+
+# Private mail (managed by the human from a full login or the app)
+whisk private                      # this login's access; rules and counts on a full login
+whisk private preview|add|edit|rm  # rules in plain words; whisk private mark|unmark|reset <id…> by hand
+whisk private token <name>         # a login for an agent that never sees private mail (--can read,draft)
 
 # Linking: when you mention a thread to the human, give them the link
 whisk link <id…>                   # https://whisk.email/#t/<id>, one per id; opens straight onto the thread

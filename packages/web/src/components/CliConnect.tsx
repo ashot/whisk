@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useTracked } from "../store/mailStore";
-import { orderedAccounts } from "../store/selectors";
+import { orderedAccounts, privacyRules } from "../store/selectors";
 import type { Account } from "../store/types";
 import {
   clearCliConnect,
@@ -30,15 +30,19 @@ export function CliConnect({
   request: CliConnectRequest;
   onDone: () => void;
 }): React.ReactElement {
-  const s = useTracked([(s) => s.accounts]);
+  const s = useTracked([(s) => s.accounts, (s) => s.clientState, (s) => s.threads]);
   const accounts = orderedAccounts(s.accounts) as Account[];
   const [phase, setPhase] = useState<Phase>({ kind: "ask" });
+  // Agents run in terminals, so once anything is private a new terminal
+  // starts as an agent login; the person picks Full to see everything there.
+  const hasPrivate = privacyRules(s).length > 0 || Object.values(s.threads).some((t) => t.private_mark);
+  const [agent, setAgent] = useState(hasPrivate);
 
   const authorize = async () => {
     setPhase({ kind: "working" });
     let minted;
     try {
-      minted = await mintDeviceToken(request.device);
+      minted = await mintDeviceToken(request.device, { agent });
     } catch (e) {
       setPhase({ kind: "error", message: String((e as Error).message ?? e) });
       return;
@@ -78,6 +82,16 @@ export function CliConnect({
               ))}
               .
             </p>
+            <div className="cli-access" role="radiogroup" aria-label="Access">
+              <button role="radio" aria-checked={agent} className={agent ? "is-on" : ""} onClick={() => setAgent(true)}>
+                <strong>Agent</strong>
+                <span>Never sees private mail</span>
+              </button>
+              <button role="radio" aria-checked={!agent} className={!agent ? "is-on" : ""} onClick={() => setAgent(false)}>
+                <strong>Full</strong>
+                <span>Everything, like this browser</span>
+              </button>
+            </div>
             <div className="welcome-actions">
               <button
                 className="welcome-primary"

@@ -257,6 +257,9 @@ PODS:
   - ExpoWebBrowser (15.0.11):
     - ExpoModulesCore
   - EXStructuredHeaders (5.0.0)
+  - EXTaskManager (14.0.9):
+    - ExpoModulesCore
+    - UMAppLoader
   - EXUpdates (29.0.19):
     - EASClient
     - EXManifests
@@ -2226,6 +2229,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - UMAppLoader (6.0.8)
   - Yoga (0.0.0)
 
 DEPENDENCIES:
@@ -2255,6 +2259,7 @@ DEPENDENCIES:
   - "ExpoSQLite (from `../../../node_modules/.bun/expo-sqlite@16.0.10+20d9ed56b58cb601/node_modules/expo-sqlite/ios`)"
   - "ExpoWebBrowser (from `../../../node_modules/.bun/expo-web-browser@15.0.11+20d9ed56b58cb601/node_modules/expo-web-browser/ios`)"
   - "EXStructuredHeaders (from `../../../node_modules/.bun/expo-structured-headers@5.0.0/node_modules/expo-structured-headers/ios`)"
+  - "EXTaskManager (from `../../../node_modules/.bun/expo-task-manager@14.0.9+20d9ed56b58cb601/node_modules/expo-task-manager/ios`)"
   - "EXUpdates (from `../../../node_modules/.bun/expo-updates@29.0.19+20d9ed56b58cb601/node_modules/expo-updates/ios`)"
   - "EXUpdatesInterface (from `../../../node_modules/.bun/expo-updates-interface@2.0.0+20d9ed56b58cb601/node_modules/expo-updates-interface/ios`)"
   - "FBLazyVector (from `../../../node_modules/.bun/react-native@0.81.5+49d3b0e3a41aca42/node_modules/react-native/Libraries/FBLazyVector`)"
@@ -2330,6 +2335,7 @@ DEPENDENCIES:
   - "RNReanimated (from `../../../node_modules/.bun/react-native-reanimated@4.1.7+3714e24d906d492f/node_modules/react-native-reanimated`)"
   - "RNScreens (from `../../../node_modules/.bun/react-native-screens@4.16.0+49d3b0e3a41aca42/node_modules/react-native-screens`)"
   - "RNWorklets (from `../../../node_modules/.bun/react-native-worklets@0.5.1+49d3b0e3a41aca42/node_modules/react-native-worklets`)"
+  - "UMAppLoader (from `../../../node_modules/.bun/unimodules-app-loader@6.0.8/node_modules/unimodules-app-loader/ios`)"
   - "Yoga (from `../../../node_modules/.bun/react-native@0.81.5+49d3b0e3a41aca42/node_modules/react-native/ReactCommon/yoga`)"
 
 SPEC REPOS:
@@ -2389,6 +2395,8 @@ EXTERNAL SOURCES:
     :path: "../../../node_modules/.bun/expo-web-browser@15.0.11+20d9ed56b58cb601/node_modules/expo-web-browser/ios"
   EXStructuredHeaders:
     :path: "../../../node_modules/.bun/expo-structured-headers@5.0.0/node_modules/expo-structured-headers/ios"
+  EXTaskManager:
+    :path: "../../../node_modules/.bun/expo-task-manager@14.0.9+20d9ed56b58cb601/node_modules/expo-task-manager/ios"
   EXUpdates:
     :path: "../../../node_modules/.bun/expo-updates@29.0.19+20d9ed56b58cb601/node_modules/expo-updates/ios"
   EXUpdatesInterface:
@@ -2538,6 +2546,8 @@ EXTERNAL SOURCES:
     :path: "../../../node_modules/.bun/react-native-screens@4.16.0+49d3b0e3a41aca42/node_modules/react-native-screens"
   RNWorklets:
     :path: "../../../node_modules/.bun/react-native-worklets@0.5.1+49d3b0e3a41aca42/node_modules/react-native-worklets"
+  UMAppLoader:
+    :path: "../../../node_modules/.bun/unimodules-app-loader@6.0.8/node_modules/unimodules-app-loader/ios"
   Yoga:
     :path: "../../../node_modules/.bun/react-native@0.81.5+49d3b0e3a41aca42/node_modules/react-native/ReactCommon/yoga"
 
@@ -2568,6 +2578,7 @@ SPEC CHECKSUMS:
   ExpoSQLite: 7eedbe476870a5f18d6b89c817c4ac6f299830ad
   ExpoWebBrowser: 970dd4c64c29c955c3af664c8058ba768a4c9187
   EXStructuredHeaders: c951e77f2d936f88637421e9588c976da5827368
+  EXTaskManager: 6f1a66e4c8cc6df6e24c3d90928704bc3013eae5
   EXUpdates: cb0e229e08997919836803ffe55f911a5dcd381b
   EXUpdatesInterface: 5adf50cb41e079c861da6d9b4b954c3db9a50734
   FBLazyVector: e95a291ad2dadb88e42b06e0c5fb8262de53ec12
@@ -2579,7 +2590,7 @@ SPEC CHECKSUMS:
   React: 914f8695f9bf38e6418228c2ffb70021e559f92f
   React-callinvoker: 1c0808402aee0c6d4a0d8e7220ce6547af9fba71
   React-Core: c61410ef0ca6055e204a963992e363227e0fd1c5
-  React-Core-prebuilt: 8f4cca589c14e8cf8fc6db4587ef1c2056b5c151
+  React-Core-prebuilt: 02f0ad625ddd47463c009c2d0c5dd35c0d982599
   React-CoreModules: 1f6d1744b5f9f2ec684a4bb5ced25370f87e5382
   React-cxxreact: 3af79478e8187b63ffc22b794cd42d3fc1f1f2da
   React-debug: 6328c2228e268846161f10082e80dc69eac2e90a
@@ -2643,6 +2654,7 @@ SPEC CHECKSUMS:
   RNReanimated: 6c4e2a38410f7487a9c5061868d161f675663791
   RNScreens: d8d6f1792f6e7ac12b0190d33d8d390efc0c1845
   RNWorklets: 1793b666d1062f229508f930568838e64fd862c7
+  UMAppLoader: 145337733539f9af9b3dd97eeaa7f3bd97cacb23
   Yoga: 5934998fbeaef7845dbf698f698518695ab4cd1a
 
 PODFILE CHECKSUM: 82a85244d0db2a186628d2e97e2accd41acc92ae

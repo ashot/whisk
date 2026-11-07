@@ -525,13 +525,9 @@ html.theme-shift::view-transition-new(root) {
   box-shadow: inset 0 0 0 1px var(--m-rule);
 }
 
-.row.is-focused .row-mark {
-  background: var(--m-accent);
-}
-
 /* Selection is distinct from hover AND from the focus cursor: a solid accent
    left bar plus a stronger tint. Hover is a bare bg shift; focus is the raised
-   bg + inset ring above. A row can be selected AND focused at once and still
+   bg + inset ring above, with no bar of its own. A row can be selected AND focused at once and still
    read clearly. */
 .row.is-selected {
   background: color-mix(in srgb, var(--m-accent) 12%, var(--m-bg-raised));
@@ -4140,4 +4136,255 @@ html.desktop .rail-theme {
   display: block;
   margin-top: 2px;
   font-size: 11.5px;
+}
+
+/* ————— private mail ————— */
+
+.pv-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pv-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--m-rule-strong);
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--m-ink-muted);
+  background: var(--m-bg-raised);
+}
+
+.pv-count strong {
+  color: var(--m-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+button.pv-count:hover:not(:disabled) {
+  background: var(--m-bg-hover);
+}
+
+button.pv-count[aria-expanded="true"] {
+  border-color: var(--m-accent);
+}
+
+.pv-count.is-pending {
+  border-style: dashed;
+}
+
+.pv-who {
+  font-size: 12px;
+  color: var(--m-ink-faint);
+}
+
+.pv-rules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pv-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid var(--m-rule);
+  border-radius: var(--radius-lg);
+  font-size: 13px;
+}
+
+.pv-rule-n {
+  width: 16px;
+  flex-shrink: 0;
+  color: var(--m-ink-faint);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.pv-rule-text {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  color: var(--m-ink);
+  line-height: 1.4;
+}
+
+.pv-rule-text:hover {
+  text-decoration: underline dotted var(--m-ink-faint);
+}
+
+.pv-rule-count {
+  flex-shrink: 0;
+  min-width: 24px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--m-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pv-rule-rm {
+  flex-shrink: 0;
+  color: var(--m-ink-faint);
+  font-size: 14px;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.pv-rule-rm:hover {
+  color: var(--m-danger);
+  background: var(--m-bg-hover);
+}
+
+.pv-threads {
+  display: flex;
+  flex-direction: column;
+  margin: 8px 0;
+  border: 1px solid var(--m-rule);
+  border-radius: var(--radius-lg);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.pv-preview-head {
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--m-ink-muted);
+  border-bottom: 1px solid var(--m-rule);
+}
+
+.pv-thread {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.pv-thread + .pv-thread {
+  border-top: 1px solid var(--m-rule);
+}
+
+button.pv-thread:hover {
+  background: var(--m-bg-hover);
+}
+
+.pv-thread-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--m-ink);
+}
+
+.pv-thread-why {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--m-ink-muted);
+}
+
+.pv-error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--m-danger);
+}
+
+.pv-access {
+  display: inline-flex;
+  border: 1px solid var(--m-rule-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.pv-access button {
+  font-size: 12px;
+  padding: 4px 9px;
+  color: var(--m-ink-muted);
+}
+
+.pv-access button + button {
+  border-left: 1px solid var(--m-rule-strong);
+}
+
+.pv-access button[aria-pressed="true"] {
+  background: var(--m-bg-hover);
+  color: var(--m-ink);
+  font-weight: 550;
+}
+
+.cli-access {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 4px 0 16px;
+}
+
+.cli-access button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--m-rule-strong);
+  border-radius: var(--radius-lg);
+  text-align: left;
+  font-size: 12px;
+  color: var(--m-ink-muted);
+}
+
+.cli-access button strong {
+  font-size: 13.5px;
+  color: var(--m-ink);
+}
+
+.cli-access button.is-on {
+  border-color: var(--m-accent);
+  box-shadow: inset 0 0 0 1px var(--m-accent);
+}
+
+.pv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pv-chip.is-private {
+  background: color-mix(in srgb, var(--m-ink) 12%, transparent);
+  color: var(--m-ink);
+}
+
+.pv-chip.is-quiet {
+  padding: 3px 5px;
+  border-radius: 99px;
+  color: var(--m-ink-faint);
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+
+.thread-head:hover .pv-chip.is-quiet,
+.pv-chip.is-quiet:focus-visible {
+  opacity: 1;
+}
+
+.pv-chip.is-quiet:hover {
+  color: var(--m-ink);
+  background: var(--m-bg-hover);
+}
+
+.row-lock {
+  color: var(--m-ink-faint);
+  display: inline-flex;
 }

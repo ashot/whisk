@@ -131,7 +131,7 @@ export function allowedOrigins(): string[] {
   const raw = process.env.OAUTH_ALLOWED_ORIGINS ?? "";
   const configured = raw
     .split(",")
-    .map((s) => s.trim())
+    .map((s: string) => s.trim())
     .filter(Boolean);
   // localhost dev origins are always safe to accept — they can only be reached
   // from the developer's own machine.

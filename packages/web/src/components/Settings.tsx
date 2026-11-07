@@ -18,6 +18,7 @@ import { fromAddress, sendAddresses } from "@mail/shared/src/lib/sendAs";
 import { KeyCap } from "./KeyCap";
 import { FromPicker } from "./Compose";
 import { Terminals } from "./Terminals";
+import { PrivacySettings } from "./PrivacySettings";
 import { ConnectedApps } from "./ConnectedApps";
 import { TopicSettings } from "./TopicSettings";
 import { CalendarSettings } from "./CalendarSettings";
@@ -203,6 +204,8 @@ export function Settings(): React.ReactElement {
             </button>
           </div>
         </section>
+
+        <PrivacySettings />
 
         <ConnectedApps />
 

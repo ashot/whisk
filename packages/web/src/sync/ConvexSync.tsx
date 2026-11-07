@@ -299,6 +299,7 @@ export function ConvexSync(): null {
       parseFilter: ({ text, accountId }) => convexClient().action(api.ai.actions.parseFilter, { token: tok(), text, accountId: accountId as any }),
       previewFilter: ({ condition, accountId, limit }) => convexClient().action(api.ai.actions.previewFilter, { token: tok(), condition, accountId: accountId as any, limit }),
       previewLens: ({ name, policy, accountId, limit }) => convexClient().action(api.ai.actions.previewLens, { token: tok(), name, policy, accountId: accountId as any, limit }),
+      previewPrivacy: ({ text, limit }) => convexClient().action(api.ai.privacy.previewPrivacy, { token: tok(), text, limit }),
       draftReply: ({ threadGmailId, accountId, instruction }) =>
         convexClient().action(api.ai.actions.draftReply, {
           token: tok(),

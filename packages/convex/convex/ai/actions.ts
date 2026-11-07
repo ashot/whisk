@@ -534,6 +534,7 @@ export const parseFilter = action({
     await ctx.runMutation(internal.ai.filterSupport.takeModelBudget, { accountId: account._id, cost: 1 });
     const { labels, topics }: { labels: string[]; topics: string[] } = await ctx.runQuery(internal.ai.filterSupport.labelNames, {
       accountId: account._id,
+      token,
     });
     const parsed = await completeJson<ParsedFilter>({
       model: SMART_MODEL,

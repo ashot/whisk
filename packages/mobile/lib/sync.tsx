@@ -75,7 +75,15 @@ let booted = false;
 const maps = deriveRegistryMaps(MAIL_PLATFORM_CONFIG.registry);
 const kvCache = createKVCache(MAIL_PLATFORM_CONFIG, sqliteKV, maps);
 
-function boot(): void {
+/** Buffered cache writes land in SQLite now. The background push task calls
+ *  this before iOS suspends the process, so what it fetched survives. */
+export function flushCache(): void {
+  kvCache.flushAll();
+}
+
+/** Hydrate the store from the cache and restore the login. Idempotent; the
+ *  app calls it on mount, the background push task calls it with no app. */
+export function boot(): void {
   if (booted) return;
   booted = true;
 

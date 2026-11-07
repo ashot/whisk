@@ -21,6 +21,21 @@ import { loadThreadMessages, nameThread, storedToken } from "./sync";
 export type MailPush = { kind?: string; thread_id?: string; thread_gmail_id?: string; account_id?: string };
 const dataOf = (n: Notifications.Notification): MailPush => (n.request.content.data ?? {}) as MailPush;
 
+/** The mail a background push names. iOS hands the task the raw APNs
+ *  payload, where Expo puts the data under `body`; Android hands the same
+ *  data as a JSON string. A tap (a response) carries a notification. */
+export function backgroundPushData(payload: Notifications.NotificationTaskPayload): MailPush {
+  if ("notification" in payload && payload.notification && "request" in payload.notification) return dataOf(payload.notification as Notifications.Notification);
+  const data = (payload as { data?: { body?: unknown; dataString?: string } }).data ?? {};
+  if (data.body && typeof data.body === "object") return data.body as MailPush;
+  if (typeof data.dataString === "string") {
+    try {
+      return JSON.parse(data.dataString) as MailPush;
+    } catch {}
+  }
+  return {};
+}
+
 Notifications.setNotificationHandler({
   // Foreground: banner and sound, except for the thread already on screen,
   // where the message itself is the notification.
@@ -99,7 +114,7 @@ const warming = new Map<string, Promise<void>>();
  *  tap, so the thread screen renders from the cache. Both reads leave at
  *  once, on a killed app too: they need only the stored login, and their
  *  answers wait for the cache to hydrate so it cannot overwrite them. */
-function warm(data: MailPush): Promise<void> {
+export function warm(data: MailPush): Promise<void> {
   const { thread_id: id, thread_gmail_id: gmail_id, account_id } = data;
   if (!id || !gmail_id) return Promise.resolve();
   const running = warming.get(id);

@@ -30,6 +30,8 @@ export type AiClient = {
   previewFilter: (input: { condition: string; accountId?: string; limit?: number }) => Promise<string[]>;
   /** Dry run: every recent inbox thread's score on a draft lens. */
   previewLens: (input: { name: string; policy: string; accountId?: string; limit?: number }) => Promise<Array<{ thread_gmail_id: string; score: number; why: string }>>;
+  /** Dry run: the recent threads a privacy rule would make private, and why. */
+  previewPrivacy: (input: { text: string; limit?: number }) => Promise<Array<{ account_id: string; thread_gmail_id: string; subject: string; from: string; why: string }>>;
 };
 
 let client: AiClient | null = null;

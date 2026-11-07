@@ -8,7 +8,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
-import { mailReader } from "./lib/privacy";
+import { mailReader, visibleClusterIds } from "./lib/privacy";
 import { SYSTEM_LABEL_IDS } from "./lib/threads";
 import { THREAD_WINDOW } from "./lib/rows";
 import { modifyThreadLabels, schedulePump } from "./lib/outbound";
@@ -57,35 +57,16 @@ export const listClusters = query({
         continue;
       }
       const visible = await visibleClusterIds(ctx, account._id, reader.sees);
-      out.push(...rows.filter((row) => row.deleted || visible.has(row._id)));
+      for (const row of rows) {
+        // A removed topic still carries its name; such a reader gets only
+        // the fact that it is gone.
+        if (row.deleted) out.push({ ...row, name: "", description: "" });
+        else if (visible.has(row._id)) out.push(row);
+      }
     }
     return out;
   },
 });
-
-/**
- * The topics a reader kept from private mail may see: each one holding a
- * thread it can see, and each theme over such a topic. A topic made only of
- * private mail is named after that mail, so such a reader never gets it.
- */
-async function visibleClusterIds(
-  ctx: { db: QueryCtx["db"] },
-  accountId: Id<"accounts">,
-  sees: (t: Doc<"threads">) => boolean,
-): Promise<Set<Id<"clusters">>> {
-  const visible = new Set<Id<"clusters">>();
-  for (const t of await ctx.db
-    .query("threads")
-    .withIndex("by_account_last", (q) => q.eq("account_id", accountId))
-    .order("desc")
-    .take(THREAD_WINDOW)) {
-    if (t.cluster_id && !t.deleted && sees(t)) visible.add(t.cluster_id);
-  }
-  for (const c of await liveClusters(ctx, accountId)) {
-    if (c.parent_id && visible.has(c._id)) visible.add(c.parent_id);
-  }
-  return visible;
-}
 
 // ---------------------------------------------------------------------------
 // Scheduling

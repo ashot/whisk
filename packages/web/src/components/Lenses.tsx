@@ -15,7 +15,7 @@ import {
   type Lens,
 } from "@mail/shared/src/lib/lenses";
 import { useMailStore, useTracked } from "../store/mailStore";
-import { inGmailInbox, inScope, inboxLenses, inboxListCounts, lensView, viewLensId } from "../store/selectors";
+import { inGmailInbox, inScope, inboxLenses, lensView, viewLensId } from "../store/selectors";
 import type { Thread, ViewId } from "../store/types";
 import { participantsLine } from "../lib/format";
 import "../design/topics.css";
@@ -38,9 +38,8 @@ function SlidersIcon(): React.ReactElement {
 /** The inbox's lists as the list's title: Important, each lens, Other,
  *  and the two controls that shape them (tune this one, make another). */
 export function LensTabs({ view }: { view: ViewId }): React.ReactElement {
-  const s = useTracked([(s) => s.threads, (s) => s.accountScope, (s) => s.clientState, (s) => s.lensPanel]);
+  const s = useTracked([(s) => s.clientState, (s) => s.lensPanel]);
   const lenses = inboxLenses(s);
-  const counts = useMemo(() => inboxListCounts(s.threads, s.accountScope, lenses), [s.threads, s.accountScope, lenses]);
   const tabs: Array<{ view: ViewId; name: string }> = [...lenses.map((l) => ({ view: lensView(l.id), name: l.name })), { view: "other", name: "Other" }];
   return (
     <span className="lens-tabs" role="tablist" aria-label="Inbox lists">
@@ -53,7 +52,6 @@ export function LensTabs({ view }: { view: ViewId }): React.ReactElement {
           onClick={() => (t.view === view ? st().setLensPanel(s.lensPanel === "tune" ? null : "tune") : st().setView(t.view))}
         >
           {t.name}
-          <span className="lens-tab-count">{counts.get(t.view)?.unread || ""}</span>
         </button>
       ))}
       <span className="lens-tools">

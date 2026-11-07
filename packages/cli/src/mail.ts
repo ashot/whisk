@@ -27,6 +27,8 @@ import { parseSince } from "./when";
 export type Session = {
   accounts: Account[];
   outbound_pending: number;
+  /** This login is kept from private mail (an agent login, an app). */
+  hides_private: boolean;
 };
 
 export async function session(): Promise<Session> {
@@ -34,6 +36,7 @@ export async function session(): Promise<Session> {
   return {
     accounts: (envelope.accounts ?? []) as Account[],
     outbound_pending: envelope.outbound_pending,
+    hides_private: envelope.hides_private,
   };
 }
 
@@ -246,7 +249,10 @@ export async function resolveThreads(ids: string[]): Promise<Thread[]> {
   // A message id resolves to its thread, whose gmail_id differs from the input.
   const missing = unique.length > rows.length ? unique.filter((id) => !found.has(id)) : [];
   if (rows.length < unique.length) {
-    throw new Error(`Unknown thread${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`);
+    // A login kept from private mail is told why it may not find a thread,
+    // never whether this one is private.
+    const hint = (await session()).hides_private ? " (this login can't see private mail; it may be private)" : "";
+    throw new Error(`Unknown thread${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}${hint}`);
   }
   return rows;
 }

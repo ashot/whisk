@@ -14,7 +14,7 @@ import {
   sessionsForToken,
   touchSession,
 } from "./lib/auth";
-import { assertPayloadVisible, readerFor } from "./lib/privacy";
+import { assertPayloadVisible, readerFor, visibleClusterIds } from "./lib/privacy";
 import { markPrivate, schedulePrivacyPass } from "./privacy";
 import {
   SYSTEM_LABEL_IDS,
@@ -733,6 +733,12 @@ const saveLens: SideEffect = async (ctx, session, args) => {
 // Private mail
 // ---------------------------------------------------------------------------
 
+/** Whether a login kept from private mail may see a topic. */
+async function clusterVisibleTo(ctx: Ctx, session: Session, account: Doc<"accounts">, clusterId: Id<"clusters">): Promise<boolean> {
+  const reader = await readerFor(ctx, [account], session.hidesPrivate);
+  return (await visibleClusterIds(ctx, account._id, reader.sees)).has(clusterId);
+}
+
 /** The rules ride the prefs patch in this same dispatch; this reads every
  *  mailbox's window against the ones that are new or reworded. A removed
  *  rule needs no reading: its hits simply stop counting. */
@@ -906,6 +912,10 @@ async function clusterOrThrow(ctx: Ctx, account: Doc<"accounts">, id: unknown) {
  *  is the person's: a regroup never touches it. */
 const createCluster: SideEffect = async (ctx, session, args) => {
   const account = accountForPayload(session.accounts, args);
+  if (session.hidesPrivate) {
+    const existing = await clusterNamed(ctx, account._id, normalizeClusterName(args?.name ?? ""), undefined);
+    if (existing && !(await clusterVisibleTo(ctx, session, account, existing._id))) throw new Error("Choose another name for this topic");
+  }
   const now = Date.now();
   const cluster = await ensureCluster(
     ctx,

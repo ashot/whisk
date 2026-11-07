@@ -3,6 +3,7 @@
 // platform-shaped goes through env.ts.
 
 export * from "./store/types";
+// selectors also names a `Cluster` (a sweep pile); the row type wins the bare name.
 export * from "./store/selectors";
 export * from "./store/searchBridge";
 export * from "./store/registry";

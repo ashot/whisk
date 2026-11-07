@@ -13,6 +13,7 @@ import { splitQuotedText } from "@mail/shared/src/lib/quotes";
 import { Compose, composeIsInline } from "./Compose";
 import { HintPair } from "./KeyCap";
 import { ThreadActions } from "./MobileNav";
+import { PrivacyChip } from "./PrivacyChip";
 
 function MessageDetails({ m }: { m: Message }): React.ReactElement {
   const row = (label: string, people: Address[]) => {
@@ -263,6 +264,7 @@ export function ThreadView(): React.ReactElement | null {
           </button>
         )}
         <LensChips thread={t} />
+        <PrivacyChip thread={t} />
         {t.is_starred && <span className="thread-star">★</span>}
         {messages.length > 1 && (
           <span className="thread-msgcount">{messages.length}</span>

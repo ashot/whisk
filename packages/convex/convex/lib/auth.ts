@@ -299,7 +299,7 @@ export async function resolveCaller(
   }
   if (!token) throw new Error("Unauthorized: missing token");
   const sessions = await sessionsForToken(ctx, token, scope);
-  if (sessions.length === 0) throw new Error("Unauthorized: unknown token");
+  if (sessions.length === 0) await refuseToken(ctx, token);
   const hidesPrivate = sessions.some(rowIsLimited);
 
   const userId = sessions.find((s) => s.user_id)?.user_id;
@@ -323,6 +323,16 @@ export async function resolveCaller(
     throw new Error("Unauthorized: account no longer exists");
   }
   return { accounts, hidesPrivate };
+}
+
+/** Refuse a token that resolved no login for this function: a limited login
+ *  (an app, an agent terminal) that lacks the scope is told so, plainly;
+ *  anything else is unknown. */
+async function refuseToken(ctx: ReadCtx, token: string): Promise<never> {
+  if ((await rowsForToken(ctx, token)).length > 0) {
+    throw new Error("Unauthorized: this login is not allowed to do that");
+  }
+  throw new Error("Unauthorized: unknown token");
 }
 
 /** The user a token belongs to, or null for un-migrated legacy sessions. */
@@ -541,6 +551,6 @@ export async function requireUserId(
   if (callerId) return callerId;
   if (!token) throw new Error("Unauthorized: missing token");
   const sessions = await sessionsForToken(ctx, token, scope);
-  if (sessions.length === 0) throw new Error("Unauthorized: unknown token");
+  if (sessions.length === 0) await refuseToken(ctx, token);
   return await ensureUserForSessions(ctx, sessions);
 }

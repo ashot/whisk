@@ -61,6 +61,7 @@ import { seedCompose } from "../lib/compose";
 import { fromAddress, isOwnAddress } from "../lib/sendAs";
 import { categoryMeta } from "../lib/categories";
 import { IMPORTANT, MAX_LENSES, clampCutoff, inLens, newLensId, type Lens } from "../lib/lenses";
+import type { PrivacyRule } from "../lib/privacy";
 
 export type Toast = {
   id: number;
@@ -205,6 +206,12 @@ export type MailState = {
   /** Create or edit a lens's name and description; the server scores the
    *  recent inbox on it again. */
   saveLens: (payload: { id: string; name: string; policy?: string }) => void;
+  /** The person's privacy rules, whole. The server reads mail against any
+   *  rule that is new or reworded; agents see none of it until it has. */
+  savePrivacyRules: (payload: { rules: PrivacyRule[] }) => void;
+  /** Mark threads private or not private by hand (final over the rules);
+   *  null hands them back to the rules. */
+  setPrivate: (payload: { thread_gmail_ids: string[]; private: boolean | null; account_id?: string }) => void;
   setReminder: (payload: {
     thread_gmail_id: string;
     kind: "snooze" | "followup";
@@ -717,6 +724,23 @@ const creator = (set: any, get: any) => ({
       revision: (prev?.revision ?? 0) + (prev && (prev.policy ?? "") === (policy ?? "") ? 0 : 1),
     };
     applyClientPref(this, "lenses", prev ? lenses.map((l) => (l.id === next.id ? next : l)) : [...lenses, next]);
+  }),
+
+  savePrivacyRules: action(function (this: MailState, payload: { rules: PrivacyRule[] }) {
+    applyClientPref(this, "privacy_rules", payload.rules);
+  }),
+
+  setPrivate: action(function (
+    this: MailState,
+    payload: { thread_gmail_ids: string[]; private: boolean | null; account_id?: string },
+  ) {
+    const targets = new Set(payload.thread_gmail_ids);
+    for (const id in this.threads) {
+      const t = this.threads[id];
+      if (!targets.has(t.gmail_id)) continue;
+      if (payload.account_id && t.account_id !== payload.account_id) continue;
+      t.private_mark = payload.private ?? undefined;
+    }
   }),
 
   setReminder: action(function (

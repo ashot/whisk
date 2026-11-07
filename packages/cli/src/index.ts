@@ -11,6 +11,7 @@ import { registerTopics } from "./commands/topics";
 import { registerViews } from "./commands/views";
 import { registerSnippet } from "./commands/snippet";
 import { registerSubscribe } from "./commands/subscribe";
+import { registerPrivacy } from "./commands/privacy";
 
 // whisk: the Whisk mailbox from a terminal. One command per gesture the app
 // has, so an agent that can run a shell can do anything its human can do in
@@ -39,6 +40,7 @@ registerSubscribe(program);
 registerSnippet(program);
 registerTopics(program);
 registerViews(program);
+registerPrivacy(program);
 registerCalendar(program);
 
 program.parseAsync(process.argv).catch((error: unknown) => {

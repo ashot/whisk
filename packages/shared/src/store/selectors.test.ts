@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { inboxItems, inboxListCounts, laneCounts, threadInView, viewSlice, visibleThreads } from "./selectors";
+import { inboxItems, laneCounts, threadInView, viewSlice, visibleThreads } from "./selectors";
 import { IMPORTANT, lensesFromPrefs, type Lens } from "../lib/lenses";
 import { L, type Thread } from "./types";
 
@@ -118,17 +118,13 @@ describe("lenses", () => {
     expect(threadInView(placed, "inbox", undefined, looser)).toBe(false);
   });
 
-  test("lanes count the whole inbox; the tabs count each list", () => {
+  test("lanes count the whole inbox, whatever list a thread sits in", () => {
     const all = Object.fromEntries([
       thread([L.INBOX, L.UNREAD], { lens_scores: { important: 90, kids: 10 } }),
       thread([L.INBOX, L.UNREAD], { lens_scores: { important: 10, kids: 90 }, category: "newsletters" }),
       thread([L.INBOX], { lens_scores: { important: 10, kids: 10 }, category: "newsletters" }),
     ].map((t) => [t._id, t]));
     expect(laneCounts(all).get("newsletters")).toEqual({ total: 2, unread: 1 });
-    const counts = inboxListCounts(all, undefined, lenses);
-    expect(counts.get("inbox")).toEqual({ total: 1, unread: 1 });
-    expect(counts.get("lens:kids")).toEqual({ total: 1, unread: 1 });
-    expect(counts.get("other")).toEqual({ total: 2, unread: 1 });
   });
 
   test("grouping a list as topics keeps to that list, and follows its cutoff", () => {

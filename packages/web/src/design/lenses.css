@@ -32,16 +32,6 @@
   color: var(--m-ink);
 }
 
-.lens-tab-count {
-  font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  color: var(--m-accent);
-  vertical-align: 0.5em;
-  margin-left: 2px;
-}
-
 .lens-tools {
   display: inline-flex;
   gap: 2px;

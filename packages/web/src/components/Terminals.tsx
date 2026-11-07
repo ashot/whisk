@@ -20,15 +20,18 @@ export function Terminals(): React.ReactElement {
   const [minted, setMinted] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const mint = async () => {
+  const mint = async (agent: boolean) => {
     setBusy(true);
-    const result = await change(() => mintDeviceToken("pasted from Settings"));
+    const result = await change(() => mintDeviceToken(agent ? "agent, pasted from Settings" : "pasted from Settings", { agent }));
     if (result) setMinted(result.token);
     setBusy(false);
   };
 
   const revoke = (id: Device["_id"]) =>
     change((token) => convexClient().mutation(api.devices.revoke, { token, session_id: id }));
+
+  const setAccess = (id: Device["_id"], hides_private: boolean) =>
+    change((token) => convexClient().mutation(api.devices.setAccess, { token, session_id: id, hides_private }));
 
   return (
     <section className="settings-section">
@@ -38,9 +41,14 @@ export function Terminals(): React.ReactElement {
           Use Whisk from the command line. Run <code>whisk auth</code>, or mint a login to
           paste.
         </span>
-        <button className="settings-btn" disabled={busy} onClick={() => void mint()}>
-          {busy ? "Minting…" : "Mint a login"}
-        </button>
+        <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          <button className="settings-btn" disabled={busy} onClick={() => void mint(true)} title="Never sees private mail">
+            Agent login
+          </button>
+          <button className="settings-btn" disabled={busy} onClick={() => void mint(false)}>
+            Full login
+          </button>
+        </span>
       </div>
       {minted && (
         <div style={{ marginTop: 8 }}>
@@ -59,17 +67,30 @@ export function Terminals(): React.ReactElement {
                   · last seen {relativeDate(d.last_seen_at)}
                 </span>
               </span>
-              {!d.current && (
-                <button className="settings-btn is-quiet" onClick={() => void revoke(d._id)}>
-                  Revoke
-                </button>
-              )}
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {!d.current && (
+                  <span className="pv-access" role="group" aria-label="Access">
+                    <button aria-pressed={d.hides_private} title="Never sees private mail" onClick={() => !d.hides_private && void setAccess(d._id, true)}>
+                      Agent
+                    </button>
+                    <button aria-pressed={!d.hides_private} title="Sees everything, private mail included" onClick={() => d.hides_private && void setAccess(d._id, false)}>
+                      Full
+                    </button>
+                  </span>
+                )}
+                {!d.current && (
+                  <button className="settings-btn is-quiet" onClick={() => void revoke(d._id)}>
+                    Revoke
+                  </button>
+                )}
+              </span>
             </div>
           ))}
         </div>
       )}
       <p className="settings-note">
-        A terminal login reads and sends mail as you. Revoke one to end it at once.
+        A terminal login reads and sends mail as you. An agent login never sees private mail
+        and cannot change what is private. Revoke one to end it at once.
       </p>
     </section>
   );

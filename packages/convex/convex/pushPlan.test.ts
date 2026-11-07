@@ -40,6 +40,8 @@ test("past the solo limit one digest names the senders", () => {
   expect(pushes[0].title).toBe(`${SOLO_LIMIT + 2} new messages`);
   expect(pushes[0].body).toBe("Sender-t0, Sender-t1, Sender-t2, Sender-t3 and 1 more");
   expect(pushes[0].data).toMatchObject({ kind: "mail-digest" });
+  expect(pushes[0].contentAvailable).toBeUndefined();
+  expect(newMailPushes({ threads: [mk("a")], prefs, meEmail: me, now })[0].contentAvailable).toBe(true);
 });
 
 test("notifications off, or quiet hours on the person's clock, send nothing; a preview of none hides the words", () => {

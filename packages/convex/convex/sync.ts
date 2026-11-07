@@ -5,7 +5,7 @@ import { deltaPage } from "@platform/engine-convex";
 import { query, mutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireAccounts, touchSession } from "./lib/auth";
-import { hiddenThreadRow, mailReader, threadForId } from "./lib/privacy";
+import { forReader, hiddenThreadRow, mailReader, threadForId } from "./lib/privacy";
 import {
   publicAccount,
   publicClientState,
@@ -64,7 +64,7 @@ export const listThreads = query({
           .order("desc")
           .take(take);
         // A reader kept from private mail never learns those rows exist.
-        rows.push(...page.filter(reader.sees).map(publicThread));
+        rows.push(...page.filter(reader.sees).map((row) => publicThread(forReader(reader, row))));
       }
       const nextSince = rows.reduce((max, r) => Math.max(max, r.updated_at), 0);
       return { rows, nextSince, hasMore: false };
@@ -81,7 +81,7 @@ export const listThreads = query({
           limit: take,
           // On the delta stream a thread that turned private reaches such a
           // reader as a bare tombstone, so a projection it kept drops it.
-          project: (row) => publicThread(reader.sees(row) ? row : hiddenThreadRow(row)),
+          project: (row) => publicThread(reader.sees(row) ? forReader(reader, row) : hiddenThreadRow(row)),
         }),
       );
     }
@@ -141,9 +141,15 @@ export const listDrafts = query({
       for (const row of rows) {
         // A reply or forward drafted in a thread the reader cannot see.
         if (reader.hidesPrivate) {
-          const ref = row.thread_gmail_id ?? row.reply_to_gmail_id;
-          const thread = ref ? await threadForId(ctx, account._id, ref) : null;
-          if (thread && !reader.sees(thread)) continue;
+          // Its thread, the message it answers, and any message it forwards
+          // files from.
+          const refs = [row.thread_gmail_id, row.reply_to_gmail_id, ...(row.attachments ?? []).map((a) => a.message_gmail_id)];
+          let hidden = false;
+          for (const ref of refs) {
+            const thread = ref ? await threadForId(ctx, account._id, ref) : null;
+            if (thread && !reader.sees(thread)) hidden = true;
+          }
+          if (hidden) continue;
         }
         out.push(publicDraft(row));
       }
@@ -262,7 +268,7 @@ export const threadsByIds = query({
       for (const account of reader.accounts) {
         const thread = await threadForId(ctx, account._id, gmailId);
         if (thread && !thread.deleted && reader.sees(thread)) {
-          rows.push(publicThread(thread));
+          rows.push(publicThread(forReader(reader, thread)));
           break;
         }
       }

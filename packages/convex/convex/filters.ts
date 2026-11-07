@@ -7,14 +7,14 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
-import { mailReader, privacyRulesForUser, seesId } from "./lib/privacy";
+import { mailReader, privacyRulesForUser, readerFor, seesId, visibleClusterIds } from "./lib/privacy";
 import { threadPrivacy } from "@mail/shared/src/lib/privacy";
 import { sanitizeCategory } from "./lib/categorize";
 import { SYSTEM_LABEL_IDS, threadByGmailId } from "./lib/threads";
 import { modifyThreadLabels, schedulePump } from "./lib/outbound";
 import { readableBody } from "./ai/mailText";
 import { THREAD_WINDOW } from "./lib/rows";
-import { ensureCluster, placeThreads } from "./clusters";
+import { clusterNamed, ensureCluster, placeThreads } from "./clusters";
 import { isOwnAddress } from "@mail/shared/src/lib/sendAs";
 
 // Natural-language filters: the read side, what the model judges against,
@@ -367,7 +367,19 @@ export const applyHits = internalMutation({
       const mark = { account_id: accountId, filter_id: filter._id, thread_gmail_id: thread.gmail_id, revision: hit.revision, message_count: hit.message_count, last_at: hit.last_at, updated_at: now };
       if (previous) await ctx.db.patch(previous._id, mark);
       else await ctx.db.insert("filter_matches", mark);
-      await runActions(ctx, account, hit.thread_gmail_id, filter.actions, now);
+      let actions = filter.actions;
+      if (filter.hides_private && actions.some((a) => a.kind === "cluster")) {
+        // Nor does it name a topic made of private mail.
+        const reader = await readerFor(ctx, [account], true);
+        const visible = await visibleClusterIds(ctx, account._id, reader.sees);
+        const kept: FilterAction[] = [];
+        for (const a of actions) {
+          const named = a.kind === "cluster" ? await clusterNamed(ctx, account._id, a.arg ?? "", undefined) : undefined;
+          if (!named || visible.has(named._id)) kept.push(a);
+        }
+        actions = kept;
+      }
+      await runActions(ctx, account, hit.thread_gmail_id, actions, now);
       const recent = [
         { thread_gmail_id: thread.gmail_id, subject: thread.subject.slice(0, 100), at: now },
         ...filter.recent.filter((r) => r.thread_gmail_id !== thread.gmail_id),

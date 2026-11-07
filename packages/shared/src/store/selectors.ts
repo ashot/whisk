@@ -12,6 +12,7 @@ import {
 import { CATEGORIES, type CategoryId, type CategoryMeta } from "../lib/categories";
 import { inHiddenTopic } from "../lib/notifications";
 import { DEFAULT_LENSES, IMPORTANT, inLens, lensesFromPrefs, type Lens } from "../lib/lenses";
+import { privacyRulesFromPrefs, type PrivacyRule } from "../lib/privacy";
 import { matchThread, parseQuery } from "../lib/searchQuery";
 export { inHiddenTopic };
 
@@ -79,6 +80,12 @@ export function viewLensId(view: ViewId): string {
 export const inboxLenses = (() => {
   const read = memoLast((lenses: unknown, importance: unknown) => lensesFromPrefs({ lenses, importance: importance as never }));
   return (state: { clientState: Record<string, any> }): Lens[] => read(clientPref(state, "lenses"), clientPref(state, "importance"));
+})();
+
+/** The person's privacy rules. */
+export const privacyRules = (() => {
+  const read = memoLast((rules: unknown) => privacyRulesFromPrefs({ privacy_rules: rules }));
+  return (state: { clientState: Record<string, any> }): PrivacyRule[] => read(clientPref(state, "privacy_rules"));
 })();
 
 /** `memoLast` once per slice key, so lists that read different slices in
@@ -422,29 +429,6 @@ export const inboxItems = memoLast(function inboxItems(
   if (mutedPiles.length > 0) out.push({ kind: "muted", id: "muted", piles: mutedPiles });
   return out;
 });
-
-/** Unread and total per inbox list (Important, each lens, Other): the
- *  numbers on the tabs. Keyed by each list's view id. */
-export function inboxListCounts(
-  all: Record<string, Thread>,
-  scope: AccountScope | undefined,
-  lenses: readonly Lens[],
-): Map<ViewId, LaneCount> {
-  const views: ViewId[] = [...lenses.map((l) => lensView(l.id)), "other"];
-  const slicesFor = views.map((v) => viewSlice(v, lenses)!);
-  const out = new Map<ViewId, LaneCount>(views.map((v) => [v, { total: 0, unread: 0 }]));
-  for (const id in all) {
-    const t = all[id];
-    if (!inScope(t, scope) || !inGmailInbox(t)) continue;
-    slicesFor.forEach((slice, i) => {
-      if (!slice.has(t)) return;
-      const entry = out.get(views[i])!;
-      entry.total++;
-      if (t.is_unread) entry.unread++;
-    });
-  }
-  return out;
-}
 
 /** The topic view a list is rooted in, if any. */
 export function viewRoot(view: ViewId): string | undefined {

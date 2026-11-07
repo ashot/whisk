@@ -18,6 +18,7 @@ import {
   isInboxList,
   viewSlice,
   inboxLenses,
+  privacyRules,
   viewLensId,
   ALL_INBOX,
   LOOSE_SECTION,
@@ -30,6 +31,7 @@ import { categoryMeta } from "@mail/shared/src/lib/categories";
 import { dueLabel } from "@mail/shared/src/lib/times";
 import type { Sender } from "@mail/shared/src/lib/sendAs";
 import { useCoarseNow } from "@mail/platform";
+import { threadPrivacy } from "@mail/shared/src/lib/privacy";
 import { HintPair } from "./KeyCap";
 import { DraftList } from "./DraftList";
 import { LensPanel, LensTabs } from "./Lenses";
@@ -37,6 +39,16 @@ import { TopicHead } from "./TopicHead";
 import { NavButton, SearchButton } from "./MobileNav";
 import { useNarrow } from "../lib/narrow";
 import { useSwipe } from "../lib/swipe";
+
+function LockIcon(): React.ReactElement {
+  return (
+    <svg className="row-clip" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.4" role="img" aria-label="Private: hidden from agents">
+      <title>Private: hidden from agents</title>
+      <rect x="3" y="7" width="10" height="7.5" rx="1.5" />
+      <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+    </svg>
+  );
+}
 
 /** Drawn, not typed: a text glyph (⊕, 📎) is at the mercy of the platform's
  *  emoji substitution and lands in the wrong face and weight. */
@@ -112,8 +124,11 @@ const ThreadRow = React.memo(function ThreadRow({
   topic,
   hue,
   score,
+  isPrivate,
 }: {
   t: Thread;
+  /** Hidden from agents (lib/privacy). */
+  isPrivate?: boolean;
   /** While a list is being tuned: this row's score on its lens. */
   score?: number;
   /** The hue of the section the row sits in, when the inbox shows as
@@ -249,6 +264,7 @@ const ThreadRow = React.memo(function ThreadRow({
             {l.name}
           </span>
         ))}
+        {isPrivate && <LockIcon />}
         {t.has_attachments && <ClipIcon />}
       </span>
       {/* Outside the meta group: a phone card lifts the date to the sender's line. */}
@@ -291,6 +307,7 @@ export function ThreadList(): React.ReactElement {
   // loose page holds the mail no topic claimed.
   const root = viewRoot(view);
   const lenses = inboxLenses(s);
+  const rules = privacyRules(s);
   const tuning = s.lensPanel === "tune" && isInboxList(view) ? viewLensId(view) : null;
   const threads = useMemo(
     () => (root ? (root === LOOSE_SECTION ? loosePile(s.threads, s.clusters, s.accountScope) : topicPile(s.threads, s.clusters, s.accountScope, root))?.threads ?? [] : visibleThreads(s.threads, view, s.searchHits, s.accountScope, s.reminders, s.labels, lenses)),
@@ -449,6 +466,7 @@ export function ThreadList(): React.ReactElement {
                   {item.kind === "thread" ? (
                     <ThreadRow
                       t={item.thread}
+                      isPrivate={threadPrivacy(item.thread, rules) === "private"}
                       focused={focused}
                       selected={!!s.selected[item.id]}
                       hue={item.hue}

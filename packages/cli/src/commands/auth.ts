@@ -23,10 +23,9 @@ function deviceLabel(): string {
 /** Store a login and learn who it belongs to. */
 async function adopt(token: string, userId?: string): Promise<void> {
   updateConfig({ token, user_id: userId });
-  const devices = await query(api.devices.list, {});
-  const me = devices.find((d) => d.current);
+  const me = await query(api.devices.self, {});
   const s = await session();
-  updateConfig({ email: s.accounts[0]?.email, device_id: me?._id });
+  updateConfig({ email: s.accounts[0]?.email, device_id: me._id });
 }
 
 async function runAuth(): Promise<void> {
@@ -85,9 +84,8 @@ export function registerAuth(program: Command): void {
       const config = readConfig();
       if (config.token) {
         try {
-          const devices = await query(api.devices.list, {});
-          const me = devices.find((d) => d.current);
-          if (me) await mutation(api.devices.revoke, { session_id: me._id });
+          const me = await query(api.devices.self, {});
+          await mutation(api.devices.revoke, { session_id: me._id });
         } catch {
           // Already revoked or unreachable: forgetting locally is still right.
         }
@@ -105,8 +103,9 @@ export function registerAuth(program: Command): void {
     emit(opts.json, rows, () => {
       for (const d of rows) {
         const seen = d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : "never";
+        const access = d.hides_private ? fmt.warning("agent   ") : fmt.muted("full    ");
         console.log(
-          `${fmt.id(d._id)}  ${(d.device_name ?? "unnamed").padEnd(28)} ${fmt.muted("last seen " + seen)}${d.current ? fmt.accent("  (this terminal)") : ""}`,
+          `${fmt.id(d._id)}  ${(d.device_name ?? "unnamed").padEnd(28)} ${access} ${fmt.muted("last seen " + seen)}${d.current ? fmt.accent("  (this terminal)") : ""}`,
         );
       }
     });
@@ -125,6 +124,7 @@ export function registerAuth(program: Command): void {
       const s = await session();
       emit(opts.json, { email, convex_url: convexUrl, ...s }, () => {
         printAccounts(s.accounts, s.outbound_pending, email);
+        if (s.hides_private) console.log(fmt.muted(`This login can't see private mail (${fmt.cmd("whisk private")}).`));
         if (snippetStale()) console.log(fmt.warning(`Agent snippet is out of date: ${fmt.cmd("whisk snippet install")}`));
       });
     },

@@ -26,7 +26,8 @@ type SchedCtx = { scheduler: MutationCtx["scheduler"] };
 /** Threads one pass run takes before it hands the rest to a fresh run, so
  *  a whole window never sits in one action. */
 export const PRIVACY_RUN = 120;
-/** Messages of a thread the judge reads, newest first, and how much of each. */
+/** Messages of a thread the judge reads (the newest, plus the first), and
+ *  how much of each. */
 const VIEW_MESSAGES = 4;
 const VIEW_CHARS = 700;
 
@@ -141,6 +142,8 @@ export const privacyViews = internalQuery({
     for (const id of threadGmailIds.slice(0, PRIVACY_BATCH * 2)) {
       const t = await threadRow(ctx, accountId, id);
       if (!t || t.deleted) continue;
+      // The first message (it often says what the thread is about, and
+      // scrolls out of a long thread first) and the newest few.
       const newest: Doc<"messages">[] = [];
       for await (const m of ctx.db
         .query("messages")
@@ -150,7 +153,17 @@ export const privacyViews = internalQuery({
         newest.push(m);
         if (newest.length >= VIEW_MESSAGES) break;
       }
+      let first: Doc<"messages"> | null = null;
+      if (newest.length >= VIEW_MESSAGES) {
+        for await (const m of ctx.db
+          .query("messages")
+          .withIndex("by_account_thread", (q) => q.eq("account_id", accountId).eq("thread_gmail_id", id))
+          .order("asc")) {
+          if (!m.deleted) { first = m; break; }
+        }
+      }
       const messages = newest.reverse();
+      if (first && !messages.some((m) => m._id === first!._id)) messages.unshift(first);
       const name = (a: { name?: string; email: string }) => (a.name ? `${a.name} <${a.email}>` : a.email);
       const inbound = [...messages].reverse().find((m) => !account || !isOwnAddress(account, m.from.email)) ?? messages[messages.length - 1];
       out.push({
@@ -203,8 +216,13 @@ export const applyVerdicts = internalMutation({
       const same = t.private_count === t.message_count;
       const liveKeys = new Set(current.keys());
       const liveIds = new Set(current.values());
-      const checked = [...new Set([...(same ? (t.private_checked ?? []).filter((k) => liveKeys.has(k)) : []), ...checkedNow])].sort();
-      const kept = same ? (t.private_hits ?? []).filter((id) => liveIds.has(id) && !judgedIds.has(id)) : [];
+      // A hit is sticky: once a thread fell under a rule at its current
+      // wording, new mail never opens it again (the judge sees only part of
+      // a long thread). Rewording the rule, or the person's hand, does.
+      const priorKeys = new Set(t.private_checked ?? []);
+      const sticky = (t.private_hits ?? []).filter((id) => rules.some((r) => r.id === id && priorKeys.has(ruleKey(r))));
+      const checked = [...new Set([...(same ? (t.private_checked ?? []).filter((k) => liveKeys.has(k)) : []), ...sticky.map((id) => ruleKey(rules.find((r) => r.id === id)!)), ...checkedNow])].sort();
+      const kept = [...sticky, ...(same ? (t.private_hits ?? []).filter((id) => liveIds.has(id) && !judgedIds.has(id)) : [])];
       const hits = [...new Set([...kept, ...r.hits.filter((id) => judgedIds.has(id))])].sort();
       const why = hits.length > 0 ? (r.hits.length > 0 ? r.why?.slice(0, 120) : t.private_why) : undefined;
       await ctx.db.patch(t._id, {

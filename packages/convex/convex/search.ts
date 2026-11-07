@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { action, internalQuery, query } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { requireAccount, requireAccounts } from "./lib/auth";
-import { mailReader } from "./lib/privacy";
+import { forReader, mailReader } from "./lib/privacy";
 import { threadPrivacy } from "@mail/shared/src/lib/privacy";
 import { scopeNeedValidator } from "./lib/apps";
 import { actionAccounts } from "./lib/actionAuth";
@@ -81,7 +81,7 @@ export const searchThreads = query({
         }
         if (!reader.sees(thread)) continue;
         if (!matchThread(thread, parsed, labelNameById)) continue;
-        hits.push(publicThread(thread));
+        hits.push(publicThread(forReader(reader, thread)));
         if (++accountHits >= take) break;
       }
     }
@@ -159,7 +159,7 @@ export const threadRows = internalQuery({
         )
         .unique();
       if (!thread || thread.deleted) continue;
-      if (reader.sees(thread)) rows.push(publicThread(thread));
+      if (reader.sees(thread)) rows.push(publicThread(forReader(reader, thread)));
       else if (threadPrivacy(thread, reader.rules) === "pending") pending.push(gmailId);
     }
     return { rows, pending };

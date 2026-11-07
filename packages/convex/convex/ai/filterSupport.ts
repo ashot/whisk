@@ -4,6 +4,7 @@ import type { Doc } from "../_generated/dataModel";
 import { validateActions } from "../filters";
 import { liveClusters } from "../clusters";
 import { rowsForToken } from "../lib/auth";
+import { mailReader, visibleClusterIds } from "../lib/privacy";
 
 // Default-runtime helpers the filter actions (Node runtime) call for data
 // they cannot read themselves.
@@ -11,15 +12,19 @@ import { rowsForToken } from "../lib/auth";
 /** The names a filter sentence may point at: the person's Gmail labels and
  *  their live topics. */
 export const labelNames = internalQuery({
-  args: { accountId: v.id("accounts") },
-  handler: async (ctx, { accountId }) => {
+  args: { accountId: v.id("accounts"), token: v.optional(v.string()) },
+  handler: async (ctx, { accountId, token }) => {
+    // The caller's own view of the topics: one kept from private mail never
+    // sees a topic made of it, here or in the model's answer.
+    const reader = await mailReader(ctx, token, "mail.read", accountId);
+    const visible = reader.hidesPrivate ? await visibleClusterIds(ctx, accountId, reader.sees) : null;
     const rows = await ctx.db
       .query("labels")
       .withIndex("by_account", (q) => q.eq("account_id", accountId))
       .collect();
     return {
       labels: rows.filter((l) => !l.deleted && l.kind === "user").map((l) => l.name).sort(),
-      topics: (await liveClusters(ctx, accountId)).map((c) => c.name).sort(),
+      topics: (await liveClusters(ctx, accountId)).filter((c) => !visible || visible.has(c._id)).map((c) => c.name).sort(),
     };
   },
 });

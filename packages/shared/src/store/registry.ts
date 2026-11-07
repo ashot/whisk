@@ -83,6 +83,7 @@ export const MAIL_PLATFORM_CONFIG: PlatformConfig = {
         clustering: "local_wins",
         send_from: "local_wins",
         lenses: "local_wins",
+        privacy_rules: "local_wins",
       },
     },
   },
@@ -108,6 +109,10 @@ export const MAIL_PLATFORM_CONFIG: PlatformConfig = {
     // learns from; a lens save carries the lens itself.
     "setLensMark",
     "saveLens",
+    // What is private is the person's word; a dropped save or mark would
+    // leave agents seeing mail the person meant to hide.
+    "savePrivacyRules",
+    "setPrivate",
   ]),
   // Draft autosaves are full-value LWW per draft — keep only the newest row
   // per draft in the durable queue.

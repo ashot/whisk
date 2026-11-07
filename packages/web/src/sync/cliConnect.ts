@@ -41,10 +41,12 @@ export type MintedDevice = { token: string; user_id: string; email: string | nul
 
 /** Mint a device login for this person. A legacy-token session presents its
  *  token; a Convex Auth session resolves from the JWT on the socket. */
-export function mintDeviceToken(deviceName: string): Promise<MintedDevice> {
+export function mintDeviceToken(deviceName: string, opts: { agent?: boolean } = {}): Promise<MintedDevice> {
   return convexClient().mutation(api.devices.mint, {
     token: mailStore.getState().authToken ?? undefined,
     device_name: deviceName,
+    // An agent login never sees private mail and cannot change what is.
+    hides_private: opts.agent || undefined,
   });
 }
 

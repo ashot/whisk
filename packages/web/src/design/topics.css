@@ -356,9 +356,6 @@
   background: hsl(var(--hue) var(--lane-s) var(--lane-l));
 }
 
-.section-row.is-loose.is-focused .row-mark {
-  background: var(--m-accent);
-}
 
 .section-name {
   font-family: var(--font-read);

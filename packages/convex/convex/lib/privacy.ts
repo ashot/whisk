@@ -1,6 +1,7 @@
 import { Doc, Id } from "../_generated/dataModel";
 import { resolveCaller, type ReadCtx } from "./auth";
 import type { ScopeNeed } from "./apps";
+import { THREAD_WINDOW } from "./rows";
 import {
   privacyRulesFromPrefs,
   threadPrivacy,
@@ -178,11 +179,68 @@ export async function assertPayloadVisible(
   payload: unknown,
 ): Promise<void> {
   if (!reader.hidesPrivate) return;
+  const account = (payload as any)?.account_id
+    ? reader.accounts.find((a) => a._id === (payload as any).account_id)
+    : reader.accounts[0];
+  const clusters = payloadClusterRefs(payload);
+  if (account && clusters.length > 0) {
+    const visible = await visibleClusterIds(ctx, account._id, reader.sees);
+    if (clusters.some((id) => !visible.has(id as Id<"clusters">))) throw new Error("Topic not found");
+  }
   for (const ref of payloadMailRefs(payload)) {
-    const account = ref.account_id
+    const home = ref.account_id
       ? reader.accounts.find((a) => a._id === ref.account_id)
       : reader.accounts[0];
-    if (!account) continue; // accountForPayload refuses it downstream
-    if (!(await seesId(ctx, reader, account._id, ref.id))) throw new Error("Thread not found");
+    if (!home) continue; // accountForPayload refuses it downstream
+    if (!(await seesId(ctx, reader, home._id, ref.id))) throw new Error("Thread not found");
   }
+}
+
+/**
+ * The topics a reader kept from private mail may see: each one holding a
+ * thread it can see, and each theme over such a topic. A topic made only of
+ * private mail is named after that mail, so such a reader never gets it,
+ * never names it in a filter, and never moves mail into it.
+ */
+export async function visibleClusterIds(
+  ctx: ReadCtx,
+  accountId: Id<"accounts">,
+  sees: (t: Doc<"threads">) => boolean,
+): Promise<Set<Id<"clusters">>> {
+  const visible = new Set<Id<"clusters">>();
+  for (const t of await ctx.db
+    .query("threads")
+    .withIndex("by_account_last", (q) => q.eq("account_id", accountId))
+    .order("desc")
+    .take(THREAD_WINDOW)) {
+    if (t.cluster_id && !t.deleted && sees(t)) visible.add(t.cluster_id);
+  }
+  for (const c of await ctx.db
+    .query("clusters")
+    .withIndex("by_account", (q) => q.eq("account_id", accountId))
+    .collect()) {
+    if (!c.deleted && c.parent_id && visible.has(c._id)) visible.add(c.parent_id);
+  }
+  return visible;
+}
+
+/** The topic ids a dispatch payload names. */
+function payloadClusterRefs(payload: any): string[] {
+  const out: string[] = [];
+  for (const key of ["cluster_id", "into_id", "parent_id"]) {
+    if (typeof payload?.[key] === "string" && payload[key]) out.push(payload[key]);
+  }
+  if (Array.isArray(payload?.from_ids)) out.push(...payload.from_ids.filter((x: unknown) => typeof x === "string"));
+  return out;
+}
+
+/**
+ * What a reader kept from private mail receives of a thread it may see:
+ * the row without the model's privacy reasoning, which can describe what
+ * the thread is about (a thread the person opened by hand keeps it).
+ */
+export function forReader<T extends Doc<"threads">>(reader: MailReader, row: T): T {
+  if (!reader.hidesPrivate || (row.private_why === undefined && row.private_hits === undefined)) return row;
+  const { private_why: _why, private_hits: _hits, ...rest } = row;
+  return rest as T;
 }
