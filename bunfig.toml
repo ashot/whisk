@@ -1,0 +1,3 @@
+[test]
+# Whisk's own tests; the vendored platform packages carry their own suites.
+root = "packages"

@@ -1,0 +1,48 @@
+# Cloudflare Pages response headers. Vite copies public/ into dist/, so this
+# ships with every build.
+#
+# Cloudflare's defaults already send x-content-type-options and referrer-policy
+# and add `access-control-allow-origin: *` to every asset. The wildcard is not
+# needed by anything: the desktop shell fetches release.json from Electron's
+# main process, where Node's fetch ignores CORS, and the mobile app fetches
+# natively. So it is removed rather than narrowed.
+
+/*
+  # One year. A browser honours the longest max-age it has seen and cannot be
+  # told to forget early, so this ran at one day from Sep 6 until a month of
+  # traffic showed nothing breaks. includeSubDomains and preload are separate
+  # steps that need every subdomain on HTTPS first.
+  Strict-Transport-Security: max-age=31536000
+  # Nothing embeds whisk.email: the desktop shell loads it as a top level
+  # window, never in a frame. frame-ancestors is the modern control and
+  # X-Frame-Options covers browsers that predate it.
+  Content-Security-Policy: frame-ancestors 'none'
+  X-Frame-Options: DENY
+  # The app asks for none of these, so refuse them at the door.
+  Permissions-Policy: accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
+  ! Access-Control-Allow-Origin
+
+# Hashed assets never change; HTML and the desktop release manifest must
+# revalidate so a deploy is not stuck behind a Cloudflare cache.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+/release.json
+  Cache-Control: no-store
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+
+# A full Content-Security-Policy belongs here too, and the sources are known:
+#
+#   default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
+#   img-src 'self' data: https://determined-fox-931.convex.site;
+#   font-src 'self'; connect-src 'self' https://determined-fox-931.convex.cloud
+#   wss://determined-fox-931.convex.cloud https://determined-fox-931.convex.site;
+#   frame-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+#
+# It is deliberately not enabled yet. The Google sign-in popup posts its result
+# back through window.opener, mail bodies render in a srcdoc iframe with its own
+# policy, and React writes inline styles: each needs checking against a real
+# build before a wrong directive locks people out of their mail. Ship it first
+# as Content-Security-Policy-Report-Only, read the violations, then enforce.

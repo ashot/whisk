@@ -1,0 +1,124 @@
+/* ————————————————————————————————————————————————————————————————
+   Mail — design tokens. "The reading room."
+   Email as typeset correspondence. Paper-warm light (hero), ink-warm
+   dark. One vermilion accent, spent only where attention goes.
+   ———————————————————————————————————————————————————————————————— */
+
+/* The palette, faces, shape and motion are the family's (@platform/design,
+   imported in base.ts), shared with codecast's simple lane so the two read as
+   one product. Whisk keeps its own names for them and its own metrics. */
+:root {
+  /* type */
+  --font-ui: var(--pd-font-ui);
+  --font-read: var(--pd-font-read);
+  --font-mono: var(--pd-font-mono);
+
+  /* colour: both themes come from the family sheet */
+  --m-bg: var(--pd-bg);
+  --m-bg-raised: var(--pd-bg-raised);
+  --m-bg-sunken: var(--pd-bg-sunken);
+  --m-bg-hover: var(--pd-bg-hover);
+  --m-ink: var(--pd-ink);
+  --m-ink-muted: var(--pd-ink-muted);
+  --m-ink-faint: var(--pd-ink-faint);
+  --m-rule: var(--pd-rule);
+  --m-rule-strong: var(--pd-rule-strong);
+  --m-accent: var(--pd-accent);
+  --m-accent-ink: var(--pd-accent-ink);
+  --m-accent-soft: var(--pd-accent-soft);
+  --m-star: var(--pd-star);
+  --m-ok: var(--pd-ok);
+  --m-danger: var(--pd-danger);
+  --m-shadow: var(--pd-shadow);
+  --m-shadow-high: var(--pd-shadow-high);
+  --m-selection: var(--pd-selection);
+  /* Avatar disc lightness. The initials are drawn in --m-bg-raised (near-white
+     on paper), so the disc has to be dark enough to carry them: 0.52 clears
+     ~5:1 against white, where the old shared 0.62 sat near 3:1. */
+  --avatar-l: 0.52;
+
+  /* metrics */
+  --row-h: 44px;
+  --rail-w: 232px;
+  --rail-w-min: 64px;
+  --measure: 66ch;
+  --radius: var(--pd-radius);
+  --radius-lg: var(--pd-radius-lg);
+
+  /* motion */
+  --t-view: var(--pd-t-view);
+  --t-fast: var(--pd-t-fast);
+
+  accent-color: var(--m-accent);
+}
+
+:root[data-theme="dark"] {
+  /* Ink-dark initials on the disc: here it is the disc that must stay light. */
+  --avatar-l: 0.62;
+}
+
+/* ———— base ———— */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--m-ink);
+  background: var(--m-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+::selection {
+  background: var(--m-selection);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  outline: none;
+}
+
+a {
+  color: var(--m-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+/* Focus visibility for the few mouse-tabbable controls. The list cursor has
+   its own treatment; this is for buttons/inputs only. */
+:focus-visible {
+  outline: 2px solid var(--m-accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* Scrollbars: quiet, warm. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--m-rule-strong) transparent;
+}

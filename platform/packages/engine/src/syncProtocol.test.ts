@@ -1,0 +1,520 @@
+import { describe, expect, it } from "bun:test";
+import { applySyncRecord, applySyncTable, applySyncPatch } from "./syncProtocol";
+import type { PendingEntry } from "./types";
+
+// The sync protocol is where local-first either holds or breaks: an optimistic
+// write must survive every contradicting server push until the server itself
+// echoes the same value, and a push that changes nothing must hand back the
+// exact objects it was given (identity reuse) so no subscriber wakes.
+
+type Row = { _id: string; title?: string; updated_at?: number; status?: string; live?: string | null };
+
+const row = (id: string, extra: Partial<Row> = {}): Row => ({ _id: id, title: id, ...extra });
+
+describe("pending protection", () => {
+  it("keeps an optimistic field value over a contradicting server push", () => {
+    const pending: Record<string, PendingEntry> = {
+      "items:a:title": { type: "field", value: "local", ts: 1 },
+    };
+
+    const { table, pending: next } = applySyncTable(
+      "items",
+      [row("a", { title: "server" })],
+      pending,
+      { a: row("a", { title: "old" }) },
+    );
+
+    expect(table.a.title).toBe("local");
+    // Still protected — the server has not echoed the local value yet.
+    expect(next["items:a:title"]).toBeDefined();
+  });
+
+  it("protects a field on a row whose id carries colons", () => {
+    const pending: Record<string, PendingEntry> = {
+      "items:dm:ann:me:locked": { type: "field", value: true, ts: 1 },
+    };
+    const { table, pending: next } = applySyncTable(
+      "items",
+      [row("dm:ann:me", { locked: false } as any)],
+      pending,
+      { "dm:ann:me": row("dm:ann:me", { locked: true } as any) },
+    );
+    expect((table["dm:ann:me"] as any).locked).toBe(true);
+    expect(next["items:dm:ann:me:locked"]).toBeDefined();
+  });
+
+  it("retires an object lock whatever key order the server returns", () => {
+    const pending: Record<string, PendingEntry> = {
+      "items:a:prefs": { type: "field", value: { mention: true, idle: false }, ts: 1 },
+    };
+    const { pending: next } = applySyncTable("items", [row("a", { prefs: { idle: false, mention: true } } as any)], pending, {});
+    expect(next["items:a:prefs"]).toBeUndefined();
+  });
+
+  it("clears the lock once the server echoes the local value", () => {
+    const pending: Record<string, PendingEntry> = {
+      "items:a:title": { type: "field", value: "local", ts: 1 },
+    };
+    const { table, pending: next } = applySyncTable(
+      "items",
+      [row("a", { title: "local" })],
+      pending,
+      { a: row("a", { title: "old" }) },
+    );
+
+    expect(table.a.title).toBe("local");
+    expect(next["items:a:title"]).toBeUndefined();
+  });
+
+  it("treats an omitted field and a local null as the same acknowledgement for declared fields", () => {
+    const pending: Record<string, PendingEntry> = {
+      "items:a:hidden_at": { type: "field", value: null, ts: 1 },
+      "items:a:other_at": { type: "field", value: null, ts: 1 },
+    };
+    const incoming = [{ _id: "a" }] as any[]; // server omits both fields
+    const { pending: next } = applySyncTable("items", incoming, pending, { a: { _id: "a" } } as any, {
+      optionalClearFields: new Set(["hidden_at"]),
+    });
+
+    expect(next["items:a:hidden_at"]).toBeUndefined();
+    expect(next["items:a:other_at"]).toBeDefined();
+  });
+
+  it("retires an array-valued lock on a value-identical echo", () => {
+    // The server re-sends collection-valued fields as fresh references on every
+    // push, so a reference-only comparison would hold this lock forever and
+    // freeze the field against every later server change.
+    const pending: Record<string, PendingEntry> = {
+      "items:a:label_ids": { type: "field", value: ["work", "urgent"], ts: 1 },
+    };
+    // prev holds the optimistic value already — the action wrote it there.
+    const prev = { a: { _id: "a", label_ids: ["work", "urgent"], updated_at: 1 } };
+    const incoming = [{ _id: "a", label_ids: ["work", "urgent"], updated_at: 2 }] as any[];
+
+    const { table, pending: next } = applySyncTable("items", incoming, pending, prev as any);
+
+    expect(table.a.label_ids).toEqual(["work", "urgent"]);
+    expect(next["items:a:label_ids"]).toBeUndefined();
+  });
+
+  it("leaves a retired array lock's row to the identity-reuse rule", () => {
+    // Identity reuse compares scalars only: an echo that changes an array
+    // WITHOUT bumping updated_at looks like a no-op and hands back the previous
+    // row. The lock still retires — the server agreed — and the next real edit
+    // bumps updated_at and lands the value. Nested payloads have always ridden
+    // updated_at this way; the value comparison did not change that.
+    const pending: Record<string, PendingEntry> = {
+      "items:a:label_ids": { type: "field", value: ["work"], ts: 1 },
+    };
+    const prev = { a: { _id: "a", label_ids: [], updated_at: 1 } };
+
+    const { table, pending: next } = applySyncTable(
+      "items",
+      [{ _id: "a", label_ids: ["work"], updated_at: 1 }] as any[],
+      pending,
+      prev as any,
+    );
+
+    expect(table.a).toBe(prev.a);
+    expect(next["items:a:label_ids"]).toBeUndefined();
+  });
+
+  it("keeps an array-valued lock while the server still disagrees", () => {
+    const pending: Record<string, PendingEntry> = {
+      "items:a:label_ids": { type: "field", value: ["work", "urgent"], ts: 1 },
+    };
+    const incoming = [{ _id: "a", label_ids: ["work"] }] as any[];
+
+    const { table, pending: next } = applySyncTable("items", incoming, pending, {
+      a: { _id: "a", label_ids: [] },
+    } as any);
+
+    expect(table.a.label_ids).toEqual(["work", "urgent"]);
+    expect(next["items:a:label_ids"]).toBeDefined();
+  });
+
+  it("compares an object-valued lock by value too", () => {
+    const pending: Record<string, PendingEntry> = {
+      "items:a:flags": { type: "field", value: { starred: true }, ts: 1 },
+    };
+    const { pending: next } = applySyncTable(
+      "items",
+      [{ _id: "a", flags: { starred: true } }] as any[],
+      pending,
+      { a: { _id: "a", flags: {} } } as any,
+    );
+    expect(next["items:a:flags"]).toBeUndefined();
+  });
+
+  it("retires an array-valued lock through the single-record path", () => {
+    const pending: Record<string, PendingEntry> = {
+      "items:a:label_ids": { type: "field", value: ["work"], ts: 1 },
+    };
+
+    const held = applySyncRecord("items", "a", { _id: "a", label_ids: ["work", "later"] }, pending);
+    expect(held.record.label_ids).toEqual(["work"]);
+    expect(held.pending["items:a:label_ids"]).toBeDefined();
+
+    const echoed = applySyncRecord("items", "a", { _id: "a", label_ids: ["work"] }, pending);
+    expect(echoed.pending["items:a:label_ids"]).toBeUndefined();
+  });
+
+  it("records a hidden server value once, then leaves the pending map untouched", () => {
+    const pending: Record<string, PendingEntry> = { "items:a:title": { type: "field", value: "local" } };
+    const { pending: next } = applySyncTable("items", [row("a", { title: "server" })], pending, {
+      a: row("a"),
+    });
+    expect(next["items:a:title"]).toEqual({ type: "field", value: "local", seen: ["server"] });
+    const again = applySyncTable("items", [row("a", { title: "server" })], next, { a: row("a") });
+    expect(again.pending).toBe(next);
+  });
+});
+
+describe("exclude / include lifecycle", () => {
+  it("blocks an excluded record and clears the tombstone once the server stops sending it", () => {
+    const pending: Record<string, PendingEntry> = { "items:a": { type: "exclude", ts: 1 } };
+
+    const blocked = applySyncTable("items", [row("a"), row("b")], pending, { a: row("a"), b: row("b") });
+    expect(blocked.table.a).toBeUndefined();
+    expect(blocked.table.b).toBeDefined();
+    expect(blocked.pending["items:a"]).toBeDefined();
+
+    const cleared = applySyncTable("items", [row("b")], pending, { b: row("b") });
+    expect(cleared.pending["items:a"]).toBeUndefined();
+  });
+
+  it("keeps an included record until the server starts sending it", () => {
+    const pending: Record<string, PendingEntry> = { "items:stub": { type: "include", ts: 1 } };
+    const prev = { stub: row("stub") };
+
+    const held = applySyncTable("items", [], pending, prev);
+    expect(held.table.stub).toBe(prev.stub);
+    expect(held.pending["items:stub"]).toBeDefined();
+
+    const acknowledged = applySyncTable("items", [row("stub")], pending, prev);
+    expect(acknowledged.pending["items:stub"]).toBeUndefined();
+  });
+
+  it("never clears a tombstone from a delta batch (absence is not deletion)", () => {
+    const pending: Record<string, PendingEntry> = {
+      "items:a": { type: "exclude", ts: 1 },
+      "items:stub": { type: "include", ts: 1 },
+    };
+    const { pending: next } = applySyncTable("items", [row("b")], pending, { b: row("b") }, { isDelta: true });
+    expect(next["items:a"]).toBeDefined();
+    expect(next["items:stub"]).toBeDefined();
+  });
+
+  // A delta batch that carries the included row is the server listing it: the
+  // acknowledgement the include waits for. Kept, it would outlive the row and
+  // block the server's later deletion of it.
+  it("clears an include when a delta batch carries the row", () => {
+    const pending: Record<string, PendingEntry> = { "items:a": { type: "include", ts: 1 } };
+    const prev = { a: row("a"), b: row("b") };
+    const { pending: next } = applySyncTable("items", [row("a")], pending, prev, { isDelta: true });
+    expect(next["items:a"]).toBeUndefined();
+  });
+});
+
+describe("identity reuse and nested fields", () => {
+  it("a change to a nested object alone is swallowed by identity reuse unless the field is deep", () => {
+    const prev = { p: { _id: "p", name: "P", task_counts: { total: 1, done: 0 } } } as any;
+    const incoming = [{ _id: "p", name: "P", task_counts: { total: 1, done: 1 } }] as any;
+    const plain = applySyncTable("projects", incoming, {}, prev, { isDelta: true });
+    expect(plain.table.p).toBe(prev.p); // the documented skip: object fields are not versioned
+    const deep = applySyncTable("projects", incoming, {}, prev, { isDelta: true, deepFields: ["task_counts"] });
+    expect(deep.table.p).toBe(incoming[0]);
+    // Equal content keeps the identity even though the push minted a fresh object.
+    const same = applySyncTable("projects", [{ _id: "p", name: "P", task_counts: { total: 1, done: 0 } }] as any, {}, prev, { isDelta: true, deepFields: ["task_counts"] });
+    expect(same.table.p).toBe(prev.p);
+  });
+});
+
+describe("delta vs snapshot semantics", () => {
+  it("does not enumerate unchanged cached rows for a no-op delta", () => {
+    let enumerations = 0;
+    const prev = new Proxy({ a: row("a"), b: row("b") }, {
+      ownKeys(target) {
+        enumerations++;
+        return Reflect.ownKeys(target);
+      },
+    });
+    const pending = {};
+    const result = applySyncTable("items", [row("a")], pending, prev, { isDelta: true });
+    expect(result.table).toBe(prev);
+    expect(result.pending).toBe(pending);
+    expect(enumerations).toBe(0);
+  });
+
+  it("retires an echoed field lock without copying an unchanged delta table", () => {
+    const prev = { a: row("a", { title: "local" }), b: row("b") };
+    const pending: Record<string, PendingEntry> = {
+      "items:a:title": { type: "field", value: "local", ts: 1 },
+      "items:b": { type: "include", ts: 1 },
+    };
+    const result = applySyncTable("items", [row("a", { title: "local" })], pending, prev, { isDelta: true });
+    expect(result.table).toBe(prev);
+    expect(result.pending["items:a:title"]).toBeUndefined();
+    expect(result.pending["items:b"]).toBe(pending["items:b"]);
+    expect(pending["items:a:title"]).toBeDefined();
+  });
+
+  it("removes excluded cached rows even when the delta is empty", () => {
+    const prev = Object.freeze({ a: row("a"), b: row("b") });
+    const pending: Record<string, PendingEntry> = { "items:a": { type: "exclude", ts: 1 } };
+    const result = applySyncTable("items", [], pending, prev, { isDelta: true });
+    expect(Object.keys(result.table)).toEqual(["b"]);
+    expect(result.table.b).toBe(prev.b);
+    expect(result.pending).toBe(pending);
+    expect(prev.a).toBeDefined();
+  });
+
+  it("retains pending overrides and overlay fields in changed delta rows", () => {
+    const prev = Object.freeze({ a: row("a", { title: "local", live: "on" }), b: row("b") });
+    const pending: Record<string, PendingEntry> = { "items:a:title": { type: "field", value: "local", ts: 1 } };
+    const incoming = row("a", { title: "server", live: null, updated_at: 2 });
+    const result = applySyncTable("items", [incoming], pending, prev, { isDelta: true, preserveFields: ["live"] });
+    expect(result.table.a).toEqual({ ...incoming, title: "local", live: "on" });
+    expect(result.table.b).toBe(prev.b);
+    expect(result.pending["items:a:title"]).toEqual({ type: "field", value: "local", ts: 1, seen: ["server"] });
+    expect(prev.a.updated_at).toBeUndefined();
+  });
+
+  it("preserves duplicate-row precedence and existing order in delta batches", () => {
+    const prev = { a: row("a"), b: row("b") };
+    const incoming = [row("c", { title: "first" }), row("a", { title: "first" }), row("a", { title: "last" }), row("c", { title: "last" })];
+    const result = applySyncTable("items", incoming, {}, prev, { isDelta: true });
+    expect(Object.keys(result.table)).toEqual(["a", "b", "c"]);
+    expect(result.table.a.title).toBe("last");
+    expect(result.table.c.title).toBe("first");
+    expect(result.table.b).toBe(prev.b);
+  });
+
+  it("drops rows absent from a snapshot and keeps them in a delta", () => {
+    const prev = { a: row("a"), b: row("b") };
+
+    const snapshot = applySyncTable("items", [row("a", { updated_at: 2 })], {}, prev);
+    expect(Object.keys(snapshot.table)).toEqual(["a"]);
+
+    const delta = applySyncTable("items", [row("a", { updated_at: 2 })], {}, prev, { isDelta: true });
+    expect(Object.keys(delta.table).sort()).toEqual(["a", "b"]);
+    expect(delta.table.b).toBe(prev.b);
+  });
+
+  it("appends rows new in incoming after the previous ordering", () => {
+    const prev = { a: row("a"), b: row("b") };
+    const delta = applySyncTable("items", [row("b"), row("c")], {}, prev, { isDelta: true });
+    expect(Object.keys(delta.table)).toEqual(["a", "b", "c"]);
+    // A snapshot keeps prev's ordering for the rows it still carries, then
+    // appends the newcomers; rows the server omitted are gone.
+    const snapshot = applySyncTable("items", [row("c"), row("b")], {}, prev);
+    expect(Object.keys(snapshot.table)).toEqual(["b", "c"]);
+  });
+});
+
+describe("pruneAbsentScope", () => {
+  const prev = {
+    a: row("a", { status: "in" }),
+    b: row("b", { status: "in" }),
+    c: row("c", { status: "out" }),
+  };
+  const inScope = (r: Row) => r.status === "in";
+
+  it("removes an in-scope row absent from a complete payload, via an exclude", () => {
+    const { table, pending } = applySyncTable("items", [row("a", { status: "in" })], {}, prev, {
+      isDelta: true,
+      pruneAbsentScope: inScope,
+    });
+    expect(table.b).toBeUndefined();
+    expect(pending["items:b"]).toEqual({ type: "exclude", ts: expect.any(Number), pruned: true } as any);
+    // Out-of-scope rows keep the normal delta behavior.
+    expect(table.c).toBe(prev.c);
+  });
+
+  it("a pruned row comes back when a later complete answer for its scope carries it, never from a plain overlay", () => {
+    const first = applySyncTable("items", [row("a", { status: "in" })], {}, prev, { isDelta: true, pruneAbsentScope: inScope });
+    expect(first.table.b).toBeUndefined();
+    // A plain delta overlay may be stale: b stays gone.
+    const stale = applySyncTable("items", [row("b", { status: "in" })], first.pending, first.table, { isDelta: true });
+    expect(stale.table.b).toBeUndefined();
+    // The scope's own later answer carries b: its newer word lifts the prune (a wrong answer, corrected).
+    const back = applySyncTable("items", [row("a", { status: "in" }), row("b", { status: "in" })], first.pending, first.table, { isDelta: true, pruneAbsentScope: inScope });
+    expect(back.table.b).toEqual(row("b", { status: "in" }));
+    expect(back.pending["items:b"]).toBeUndefined();
+  });
+
+  it("an exclude a person's delete planted still holds against a push that carries the row", () => {
+    const pending: Record<string, PendingEntry> = { "items:b": { type: "exclude", ts: 1 } };
+    const { table } = applySyncTable("items", [row("b", { status: "in" })], pending, prev, { isDelta: true });
+    expect(table.b).toBeUndefined();
+  });
+
+  it("never prunes a row with local pending state", () => {
+    const pending: Record<string, PendingEntry> = { "items:b:title": { type: "field", value: "mine" } };
+    const { table } = applySyncTable("items", [row("a", { status: "in" })], pending, prev, {
+      isDelta: true,
+      pruneAbsentScope: inScope,
+    });
+    expect(table.b).toBe(prev.b);
+  });
+});
+
+describe("identity reuse", () => {
+  it("reuses the previous row object when no scalar changed", () => {
+    const prev = { a: row("a", { updated_at: 1 }) };
+    const { table } = applySyncTable("items", [row("a", { updated_at: 1 })], {}, prev, { isDelta: true });
+    expect(table.a).toBe(prev.a);
+  });
+
+  it("reuses the whole collection object when no row changed", () => {
+    const prev = { a: row("a", { updated_at: 1 }), b: row("b", { updated_at: 1 }) };
+    const { table } = applySyncTable(
+      "items",
+      [row("a", { updated_at: 1 }), row("b", { updated_at: 1 })],
+      {},
+      prev,
+    );
+    expect(table).toBe(prev);
+  });
+
+  it("takes the incoming row when any scalar differs, even without updated_at", () => {
+    const prev = { a: row("a", { updated_at: 1, status: "idle" }) };
+    const { table } = applySyncTable("items", [row("a", { updated_at: 1, status: "busy" })], {}, prev);
+    expect(table.a).not.toBe(prev.a);
+    expect(table.a.status).toBe("busy");
+  });
+
+  it("takes the incoming row when a field crosses between null and an object", () => {
+    const prev: Record<string, any> = { user: { _id: "user", scope_type: "user", anchor: null } };
+    const { table } = applySyncTable<any>(
+      "anchorSpaces",
+      [{ _id: "user", scope_type: "user", anchor: { _id: "x1", name: "Anchor" } }],
+      {},
+      prev,
+      { isDelta: true },
+    );
+    expect(table.user).not.toBe(prev.user);
+    expect(table.user.anchor?.name).toBe("Anchor");
+  });
+
+  it("ignores fields listed as churn for the version key", () => {
+    const prev = { a: row("a", { updated_at: 1 }) };
+    const { table } = applySyncTable("items", [row("a", { updated_at: 99 })], {}, prev, {
+      ignoreFields: ["updated_at"],
+    });
+    expect(table.a).toBe(prev.a);
+  });
+});
+
+describe("preserveFields", () => {
+  it("fills an overlay-owned field from prev when the base payload carries null", () => {
+    const prev: Record<string, Row> = { a: { _id: "a", title: "a", live: "on" } };
+    const { table } = applySyncTable<Row>("items", [{ _id: "a", title: "a", live: null }], {}, prev, {
+      preserveFields: ["live"],
+    });
+    // Identity is reused because only the overlay field would have differed.
+    expect(table.a).toBe(prev.a);
+    expect(table.a.live).toBe("on");
+  });
+
+  it("lets a real incoming value win over the preserved one", () => {
+    const prev = { a: { _id: "a", title: "a", live: "on" } };
+    const { table } = applySyncTable("items", [{ _id: "a", title: "a", live: "off" }], {}, prev, {
+      preserveFields: ["live"],
+    });
+    expect(table.a.live).toBe("off");
+  });
+});
+
+describe("applySyncRecord", () => {
+  it("overrides a field until the server echoes, then clears the lock", () => {
+    const pending: Record<string, PendingEntry> = { "items:a:title": { type: "field", value: "local" } };
+
+    const held = applySyncRecord("items", "a", { _id: "a", title: "server" }, pending);
+    expect(held.record.title).toBe("local");
+    expect(held.pending["items:a:title"]).toBeDefined();
+
+    const echoed = applySyncRecord("items", "a", { _id: "a", title: "local" }, pending);
+    expect(echoed.pending["items:a:title"]).toBeUndefined();
+  });
+
+  it("passes an excluded record straight through for the caller to drop", () => {
+    const pending: Record<string, PendingEntry> = { "items:a": { type: "exclude" } };
+    const { record } = applySyncRecord("items", "a", { _id: "a", title: "server" }, pending);
+    expect(record.title).toBe("server");
+  });
+});
+
+// ── applySyncPatch: partial-patch pending protection (sync-log cargo) ─────────
+// The rule this pins: a PARTIAL patch visits ONLY the locks for fields it names
+// (patch or unset). applySyncRecord treats a missing key as the server's value,
+// so a lock recorded for a local CLEAR (value undefined) would echo against the
+// omitted key and retire before the clear ever landed.
+describe("applySyncPatch", () => {
+  const T = "tasks";
+  it("a lock on a field the patch omits survives untouched", () => {
+    const pending = { [`${T}:t1:assignee`]: { type: "field" as const, value: undefined, ts: 1 } };
+    const r = applySyncPatch(T, "t1", { title: "new" }, [], pending);
+    expect(r.pending[`${T}:t1:assignee`]).toBeDefined();
+    expect(r.fields).toEqual({ title: "new" });
+  });
+  it("a named field's lock wins until its value echoes", () => {
+    const pending = { [`${T}:t1:status`]: { type: "field" as const, value: "done", ts: 1 } };
+    let r = applySyncPatch(T, "t1", { status: "open" }, [], pending);
+    expect(r.fields.status).toBe("done");
+    expect(r.pending[`${T}:t1:status`]).toBeDefined();
+    r = applySyncPatch(T, "t1", { status: "done" }, [], pending);
+    expect(r.pending[`${T}:t1:status`]).toBeUndefined();
+  });
+  it("unset echoes an undefined-valued lock and retires it; a locked value blocks the unset", () => {
+    const pending = {
+      [`${T}:t1:assignee`]: { type: "field" as const, value: undefined, ts: 1 },
+      [`${T}:t1:label`]: { type: "field" as const, value: "keep", ts: 1 },
+    };
+    const r = applySyncPatch(T, "t1", {}, ["assignee", "label"], pending);
+    expect(r.pending[`${T}:t1:assignee`]).toBeUndefined();
+    expect(r.unset).toEqual(["assignee"]);
+    expect(r.pending[`${T}:t1:label`]).toBeDefined();
+  });
+  it("unset of an optional-clear field echoes a null-valued lock", () => {
+    const pending = { [`${T}:t1:inbox_pinned_at`]: { type: "field" as const, value: null, ts: 1 } };
+    const r = applySyncPatch(T, "t1", {}, ["inbox_pinned_at"], pending, new Set(["inbox_pinned_at"]));
+    expect(r.pending[`${T}:t1:inbox_pinned_at`]).toBeUndefined();
+    expect(r.unset).toEqual(["inbox_pinned_at"]);
+  });
+  it("an exclude on the row passes the patch through untouched", () => {
+    const pending = { [`${T}:t1`]: { type: "exclude" as const, ts: 1 } };
+    const r = applySyncPatch(T, "t1", { title: "x" }, ["y"], pending);
+    expect(r.fields).toEqual({ title: "x" });
+    expect(r.unset).toEqual(["y"]);
+  });
+});
+
+describe("scalar comparison key shapes", () => {
+  it("reuses identity for reordered keys and absent undefined fields", () => {
+    const row = { _id: "one", title: "One", status: "done", optional: undefined };
+    const prev = { one: row };
+    const incoming = [{ status: "done", title: "One", _id: "one" }];
+    expect(applySyncTable("rows", incoming, {}, prev, { isDelta: true }).table).toBe(prev);
+  });
+
+  it("detects an added scalar even when a different key was removed", () => {
+    const prev = { one: { _id: "one", optional: undefined } };
+    const incoming = [{ _id: "one", title: "One" }];
+    expect(applySyncTable("rows", incoming as any, {}, prev, { isDelta: true }).table.one).toBe(incoming[0]);
+  });
+
+  it("checks a key enumerable only on the incoming row", () => {
+    const row = Object.defineProperty({ _id: "one" }, "title", { value: "Before", enumerable: false });
+    const incoming = [{ _id: "one", title: "After" }];
+    expect(applySyncTable("rows", incoming, {}, { one: row }, { isDelta: true }).table.one).toBe(incoming[0]);
+  });
+
+  it("retires echoed locks even when the exact prior row is supplied", () => {
+    const row = { _id: "one", title: "One" };
+    const prev = { one: row };
+    const result = applySyncTable("rows", [row], { "rows:one:title": { type: "field", value: "One", ts: 1 } }, prev, { isDelta: true });
+    expect(result.table).toBe(prev);
+    expect(result.pending).toEqual({});
+  });
+});

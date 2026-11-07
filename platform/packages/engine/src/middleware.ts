@@ -1,0 +1,2352 @@
+import { create as mutativeCreate, type Patch } from "mutative";
+import { deriveRegistryMaps, type RegistryMaps } from "./registry";
+import { lockSaw, newLockId, sameLock, sameShape } from "./syncProtocol";
+import { createUndoController, enumerateTouchedCells, type UndoController } from "./undo";
+export { enumerateTouchedCells, type TouchedCell, type TouchedCellShape, type CellShapeKind } from "./undo";
+import { markUndoOutboxRefused, resetUndoHistory } from "./undoStack";
+import { claimOutboxOwner, defaultLockManager, liveOutboxOwners, newOutboxOwnerId, ownedByAnotherLiveWindow, type LockManagerLike } from "./outboxOwner";
+import type {
+  ActionFieldLock,
+  ActionTeeMeta,
+  DispatchFn,
+  IDBWriteFn,
+  OutboxEnqueueFn,
+  OutboxEntry,
+  OutboxLoadFn,
+  OutboxRemoveFn,
+  PendingEntry,
+  PlatformConfig,
+} from "./types";
+
+type DispatchBinding = {
+  epoch: number;
+  fn: DispatchFn;
+  owner?: object;
+};
+type ReceiptWaiter = {
+  promise: Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (error: unknown) => void;
+};
+
+export class StaleDispatchBindingError extends Error {
+  constructor() {
+    super("Dispatch binding changed while work was in flight");
+    this.name = "StaleDispatchBindingError";
+  }
+}
+
+export class CommandReceiptRejectedError extends Error {
+  readonly code: string;
+  readonly correction?: unknown;
+
+  constructor(rejection: { code: string; message: string; correction?: unknown }) {
+    super(rejection.message);
+    this.name = "CommandReceiptRejectedError";
+    this.code = rejection.code;
+    this.correction = rejection.correction;
+  }
+}
+
+// An asyncAction fired while no dispatch binding exists. `parked: true` means
+// the write is durably queued in the outbox and WILL deliver on the next drain
+// — callers should treat that as "pending", not "failed" (don't revert local
+// state, don't toast). `parked: false` means the write is genuinely gone.
+export class DispatchNotWiredError extends Error {
+  parked: boolean;
+  constructor(action: string, parked: boolean) {
+    super(
+      parked
+        ? `Dispatch not wired — "${action}" parked for later delivery`
+        : `Dispatch not wired — "${action}" was dropped (no outbox)`,
+    );
+    this.name = "DispatchNotWiredError";
+    this.parked = parked;
+  }
+}
+
+// A dispatch held back because an earlier write it must follow is parked in
+// the outbox after a failed send. It stays parked too, and the next drain
+// delivers both in their causal (ts) order. Pending, not failed.
+export class DispatchHeldError extends Error {
+  readonly parked = true;
+  constructor(action: string) {
+    super(`"${action}" held behind an earlier parked write; it delivers on the next drain`);
+    this.name = "DispatchHeldError";
+  }
+}
+
+// A failed send that a later send ordered after it (an undo of it) already
+// overtook on the wire. Retrying would land it after its own reversal, so it
+// stops: the reversal leaves the server where it was before this write.
+export class DispatchOvertakenError extends Error {
+  constructor(action: string, readonly cause: unknown) {
+    super(`"${action}" failed after a later write that reverses it was sent; not retried`);
+    this.name = "DispatchOvertakenError";
+  }
+}
+
+export function isParkedDispatchError(error: unknown): error is DispatchNotWiredError | DispatchHeldError {
+  return (error instanceof DispatchNotWiredError && error.parked) || error instanceof DispatchHeldError;
+}
+
+function isBrowserEventLike(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const EventCtor = typeof Event === "function" ? Event : null;
+  if (EventCtor && value instanceof EventCtor) return true;
+  const nativeEvent = (value as { nativeEvent?: unknown }).nativeEvent;
+  return !!EventCtor && nativeEvent instanceof EventCtor;
+}
+
+// React passes its event object into a directly-bound callback even when that
+// callback declares no arguments. For local actions that is harmless to the
+// action body, but the middleware also persists invocation args in IndexedDB;
+// a SyntheticEvent's nested PointerEvent is not structured-cloneable. Normalize
+// only this provably-extraneous shape. Parameterized actions keep their exact
+// args, so no business input is truncated based on Function.length.
+function normalizeZeroArgumentEventCall(fn: Function, args: any[]): any[] {
+  return fn.length === 0 && args.length === 1 && isBrowserEventLike(args[0])
+    ? []
+    : args;
+}
+
+const ACTION_FLAG = Symbol("action");
+const ASYNC_ACTION_FLAG = Symbol("asyncAction");
+const RECEIPT_ASYNC_ACTION_FLAG = Symbol("receiptAsyncAction");
+const SYNC_FLAG = Symbol("sync");
+
+type ReceiptActionEnvelope = {
+  receiptActionVersion: 1;
+  commandId: string;
+  localResult?: unknown;
+};
+
+type PublicCommandReceipt = {
+  commandId: string;
+  status: "acknowledged" | "rejected";
+  result?: unknown;
+  rejection?: { code: string; message: string; correction?: unknown };
+};
+
+// Outside effects an action body asks for (a message to sibling windows, a
+// sound). A body runs on a draft that may never commit: an undo engine's vet
+// can throw a redo's draft away after the body ran. So an effect asked for
+// while a body runs waits for that body's commit and is dropped with its
+// draft; one asked for outside any body runs at once.
+const commitEffectFrames: Array<Array<() => void>> = [];
+
+export function afterCommit(effect: () => void): void {
+  const frame = commitEffectFrames[commitEffectFrames.length - 1];
+  if (frame) frame.push(effect);
+  else effect();
+}
+
+function runCommitEffects(key: string, effects: Array<() => void>): void {
+  for (const effect of effects) {
+    try {
+      effect();
+    } catch (error) {
+      console.error(`[local-first] commit effect failed (action=${key})`, error);
+    }
+  }
+}
+
+export function action<T extends (...args: any[]) => any>(fn: T): T {
+  (fn as any)[ACTION_FLAG] = true;
+  return fn;
+}
+
+/** Like action(), but returns a Promise that resolves to the server dispatch result. */
+export function asyncAction<T extends (...args: any[]) => any>(fn: T): T {
+  (fn as any)[ASYNC_ACTION_FLAG] = true;
+  return fn;
+}
+
+/**
+ * A result-dependent, server-deduplicated action. Unlike ordinary asyncAction,
+ * an unwired call remains pending while its durable outbox entry waits for a
+ * dispatch binding. The exact command id is persisted with that entry, and the
+ * original promise resolves from the durable server receipt after replay.
+ */
+export function receiptAsyncAction<T extends (...args: any[]) => any>(fn: T): T {
+  (fn as any)[ASYNC_ACTION_FLAG] = true;
+  (fn as any)[RECEIPT_ASYNC_ACTION_FLAG] = true;
+  return fn;
+}
+
+export function sync<T extends (...args: any[]) => any>(fn: T): T {
+  (fn as any)[SYNC_FLAG] = true;
+  return fn;
+}
+
+function isAction(fn: any): boolean {
+  return typeof fn === "function" && fn[ACTION_FLAG] === true;
+}
+
+function isAsyncAction(fn: any): boolean {
+  return typeof fn === "function" && fn[ASYNC_ACTION_FLAG] === true;
+}
+
+function isReceiptAsyncAction(fn: any): boolean {
+  return typeof fn === "function" && fn[RECEIPT_ASYNC_ACTION_FLAG] === true;
+}
+
+function isSync(fn: any): boolean {
+  return typeof fn === "function" && fn[SYNC_FLAG] === true;
+}
+
+/** How a creator entry runs through the middleware. */
+export type ActionFlags = { act: boolean; asyncAct: boolean; receipt: boolean; syn: boolean };
+
+export function flagsOf(fn: any): ActionFlags {
+  return { act: isAction(fn), asyncAct: isAsyncAction(fn), receipt: isReceiptAsyncAction(fn), syn: isSync(fn) };
+}
+
+/**
+ * What kind of creator a function is: the raw creator or the wrapped store
+ * function (the wrapper carries the same flags). Lets a guard enumerate a
+ * store's actions.
+ */
+export function actionKind(fn: unknown): "action" | "asyncAction" | "receipt" | "sync" | null {
+  if (typeof fn !== "function") return null;
+  if (isReceiptAsyncAction(fn)) return "receipt";
+  if (isAsyncAction(fn)) return "asyncAction";
+  if (isAction(fn)) return "action";
+  if (isSync(fn)) return "sync";
+  return null;
+}
+
+function copyActionFlags(from: any, to: any): void {
+  for (const flag of [ACTION_FLAG, ASYNC_ACTION_FLAG, RECEIPT_ASYNC_ACTION_FLAG, SYNC_FLAG]) {
+    if (from[flag] === true) to[flag] = true;
+  }
+}
+
+const SINGLETON_KEY = "_";
+
+// Server document ids in the default shape are 32-char base32. Stub/local ids
+// (a fresh row before server assignment) are shorter and would crash the
+// server-side applyPatches.
+const DEFAULT_SERVER_ID_RE = /^[a-z0-9]{32}$/;
+export const defaultIsServerId = (id: string): boolean => DEFAULT_SERVER_ID_RE.test(id);
+
+function setNested(obj: any, path: (string | number)[], value: any): any {
+  if (path.length === 0) return value;
+  const result = typeof obj === "object" && obj !== null ? { ...obj } : {};
+  const [head, ...tail] = path;
+  result[head] = setNested(result[head], tail, value);
+  return result;
+}
+
+export type GroupPatchesContext = {
+  tableMap: RegistryMaps["dispatchTableMap"];
+  fieldToTable: RegistryMaps["dispatchFieldTableMap"];
+  isServerId: (id: string) => boolean;
+};
+
+export function groupPatchesByTable(
+  patches: Patch[],
+  state: any,
+  ctx: GroupPatchesContext,
+): Record<string, Record<string, Record<string, any>>> {
+  const result: Record<string, Record<string, Record<string, any>>> = {};
+  const { tableMap: TABLE_MAP, fieldToTable: FIELD_TO_TABLE, isServerId } = ctx;
+
+  for (const patch of patches) {
+    if (patch.op !== "replace" && patch.op !== "add" && patch.op !== "remove") continue;
+    const path = patch.path as (string | number)[];
+    if (path.length < 1) continue;
+
+    // A cleared field must reach the server as an explicit null tombstone:
+    // mutative encodes `obj.f = undefined` as replace-with-undefined and
+    // `delete obj.f` as a remove op, and the dispatch sanitizer drops undefined
+    // keys from the payload — without the null, the clear silently never
+    // syncs (the server-side applyPatches turns null into a field removal).
+    // Field-level removes pass the op gate above; record-level removes
+    // (collection path.length === 2) still fall out at the length checks.
+    const value = patch.value === undefined ? null : patch.value;
+
+    const storeKey = String(path[0]);
+
+    const fieldMapping = FIELD_TO_TABLE[storeKey];
+    if (fieldMapping && state) {
+      result[fieldMapping.table] ??= {};
+      result[fieldMapping.table][SINGLETON_KEY] ??= {};
+      result[fieldMapping.table][SINGLETON_KEY][storeKey] = state[storeKey] === undefined ? null : state[storeKey];
+      continue;
+    }
+
+    if (path.length < 2) continue;
+    const mapping = TABLE_MAP[storeKey];
+    if (!mapping) continue;
+
+    const { table, kind } = mapping;
+    result[table] ??= {};
+
+    if (kind === "collection") {
+      if (path.length < 3) continue;
+      const rowId = String(path[1]);
+      // Skip stub ids — server can't act on them. Once the row is rekeyed to
+      // its real server id, subsequent patches will dispatch normally.
+      if (!isServerId(rowId)) continue;
+      const field = String(path[2]);
+      if (mapping.fields && !mapping.fields.includes(field)) continue;
+      const nested = path.slice(3);
+
+      result[table][rowId] ??= {};
+      if (nested.length === 0) {
+        result[table][rowId][field] = value;
+      } else {
+        result[table][rowId][field] = setNested(
+          result[table][rowId][field] ?? {},
+          nested,
+          value
+        );
+      }
+    } else {
+      const field = String(path[1]);
+      const nested = path.slice(2);
+
+      result[table][SINGLETON_KEY] ??= {};
+      if (nested.length === 0) {
+        result[table][SINGLETON_KEY][field] = value;
+      } else {
+        result[table][SINGLETON_KEY][field] = setNested(
+          result[table][SINGLETON_KEY][field] ?? {},
+          nested,
+          value
+        );
+      }
+    }
+  }
+
+  return result;
+}
+
+const RETRY_DELAYS = [1000, 2000, 4000];
+
+// A rejection from the server client means the backend ANSWERED — network drops
+// never reject (a live socket client re-queues those internally across
+// reconnects). Answers split two ways:
+//  - the function itself threw ("Uncaught Error: …") or the args failed
+//    validation ("ArgumentValidationError"): deterministic — replaying the
+//    identical payload can only fail the identical way, so the retry ladder and
+//    the outbox re-drives just multiply the same refusal.
+//  - backend system errors ("Your request timed out…", "Try again later"):
+//    transient overload, carry neither marker, and stay retryable.
+export function isPermanentDispatchError(error: unknown): boolean {
+  if (error instanceof CommandReceiptRejectedError || error instanceof OutboxGaveUpError) return true;
+  // A backend that says "retryable" outranks the text match below. A thrown
+  // application error reaches the client with its data attached, so a rate
+  // limit — the one refusal that WILL accept the identical payload a moment
+  // later — would otherwise be read as terminal and dropped from the outbox.
+  // Only an explicit `true` counts; everything else keeps the old, stricter
+  // reading.
+  if ((error as { data?: { retryable?: unknown } })?.data?.retryable === true) return false;
+  const msg = String((error as { message?: unknown })?.message ?? error ?? "");
+  return /\bUncaught\b|ArgumentValidationError|Could not find public function/.test(msg);
+}
+
+// How many boots a failed outbox entry survives before it's given up on.
+// Each boot attempt already runs the full in-page retry ladder, so this
+// bounds permanently-broken dispatches (they'd otherwise slow every page
+// load forever) while letting writes stranded by an outage outlive reloads
+// that happen during that same outage.
+export const MAX_OUTBOX_BOOT_ATTEMPTS = 5;
+
+/**
+ * A parked write the outbox stopped replaying at the boot cap. To the app it
+ * is as final as a refusal: nothing will deliver it, so its paint must come
+ * back and the person must hear it did not land, the way a refusal is heard.
+ */
+export class OutboxGaveUpError extends Error {
+  constructor(action: string, cause: unknown) {
+    super(`"${action}" did not reach the server after ${MAX_OUTBOX_BOOT_ATTEMPTS} tries: ${String((cause as { message?: unknown })?.message ?? cause)}`);
+    this.name = "OutboxGaveUpError";
+  }
+}
+
+// Replay staleness ceiling. "Never drop user content" holds while delivery is
+// still meaningful; replaying a message parked for over a week delivers it
+// into a thread that has long moved on, which is its own kind of wrong.
+// Dropped rows are logged with their content so nothing disappears silently.
+export const OUTBOX_MAX_REPLAY_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Actions carrying user-authored content that MUST reach the server — losing
+// one silently drops something the user typed. These are never given up on:
+// they ride the outbox until the server acknowledges them, however many
+// reloads/outages that takes. The boot cap above only bounds low-stakes
+// bookkeeping writes whose loss is recoverable and which must not slow every
+// page load forever if permanently broken. A receipt-backed command is
+// must-deliver by construction: the server dedups it on its command id, so
+// unbounded retry is safe.
+export function makeIsMustDeliverEntry(
+  mustDeliverActions: ReadonlySet<string>,
+  mustDeliverExtra?: (entry: OutboxEntry) => boolean,
+): (entry: OutboxEntry) => boolean {
+  return (entry: OutboxEntry) => {
+    if (mustDeliverActions.has(entry.action)) return true;
+    if (isReceiptActionEnvelope(entry.result)) return true;
+    // Some must-deliver intents cannot be named by action alone (e.g. one
+    // subcommand of a generic command action carries user-authored stakes);
+    // the app supplies the predicate for those.
+    return mustDeliverExtra ? mustDeliverExtra(entry) : false;
+  };
+}
+
+// What to do with an outbox entry whose boot-time replay failed: keep it for
+// the next boot with the attempt counted, or give up at the cap. Must-deliver
+// entries are never dropped.
+export function makeOutboxFailureDisposition(
+  isMustDeliverEntry: (entry: OutboxEntry) => boolean,
+): (entry: OutboxEntry) => { keep: boolean; entry: OutboxEntry } {
+  return (entry: OutboxEntry) => {
+    const attempts = (entry.attempts ?? 0) + 1;
+    return {
+      keep: isMustDeliverEntry(entry) || attempts < MAX_OUTBOX_BOOT_ATTEMPTS,
+      entry: { ...entry, attempts },
+    };
+  };
+}
+
+function isReceiptActionEnvelope(value: unknown): value is ReceiptActionEnvelope {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ReceiptActionEnvelope>;
+  return candidate.receiptActionVersion === 1 &&
+    typeof candidate.commandId === "string" &&
+    candidate.commandId.length > 0;
+}
+
+function unwrapReceiptActionResponse(
+  envelope: ReceiptActionEnvelope,
+  response: unknown,
+): unknown {
+  if (!response || typeof response !== "object") {
+    throw new Error("Receipt-aware dispatch returned no command receipt");
+  }
+  const receipt = response as Partial<PublicCommandReceipt>;
+  if (receipt.commandId !== envelope.commandId) {
+    throw new Error("Receipt-aware dispatch returned a mismatched command receipt");
+  }
+  if (receipt.status === "rejected") {
+    if (!receipt.rejection?.code || !receipt.rejection.message) {
+      throw new Error("Rejected command receipt is missing rejection details");
+    }
+    throw new CommandReceiptRejectedError(receipt.rejection);
+  }
+  if (receipt.status !== "acknowledged") {
+    throw new Error("Receipt-aware dispatch returned an invalid command status");
+  }
+  return receipt.result;
+}
+
+export function outboxCoalesceKeyFor(
+  action: string,
+  args: any[],
+  coalesceKeys: Record<string, (args: any[]) => string | null>,
+): string | null {
+  const derive = coalesceKeys[action];
+  if (!derive) return null;
+  try {
+    return derive(args);
+  } catch {
+    return null;
+  }
+}
+
+// How long a durable enqueue may stay uncommitted before storage is reported
+// unhealthy. The dispatch path no longer waits on storage, so a slow or wedged
+// IndexedDB degrades durability only — but silently degraded durability is how
+// wedges go unnoticed for hours, so surface it. The target is a wedge — a
+// write that never lands — never contention. A cold boot on a large cache
+// replays its catch-up into the same database this write queues behind, and
+// every window on the origin shares that database, so one enqueue routinely
+// waits tens of seconds while every other write still commits. A ten-second
+// deadline tripped on exactly that and raised the banner on every boot; a
+// full minute is past anything contention explains.
+export const STORAGE_WATCHDOG_MS = 60_000;
+
+// When the watchdog timer fires far past its deadline, the event loop itself
+// was paused (hidden/frozen tab, system sleep) — the measurement is the pause,
+// not IndexedDB. Overshoot beyond this tolerance re-arms a short recheck
+// instead of tripping; a genuinely stuck write still trips once the page is
+// actually running.
+export const STORAGE_WATCHDOG_MAX_TIMER_LAG_MS = 2_000;
+export const STORAGE_WATCHDOG_RECHECK_MS = 1_000;
+
+export const CURRENT_OUTBOX_OPERATION_SCHEMA_VERSION = 1;
+
+export class UnsupportedOutboxOperationSchemaError extends Error {
+  constructor(readonly entryId: string, readonly schemaVersion: number) {
+    super(`Outbox ${entryId} uses unsupported operation schema ${schemaVersion}`);
+    this.name = "UnsupportedOutboxOperationSchemaError";
+  }
+}
+
+function assertSupportedOutboxOperationSchema(entry: OutboxEntry): void {
+  // Version 0 is the explicitly supported migration route for rows written
+  // before the field existed. Version 1 is the concrete current shape.
+  const version = entry.operationSchemaVersion ?? 0;
+  if (version !== 0 && version !== CURRENT_OUTBOX_OPERATION_SCHEMA_VERSION) {
+    throw new UnsupportedOutboxOperationSchemaError(entry.id, version);
+  }
+}
+
+// Commands can predate the receipt envelope while their server still returns a
+// receipt. Interpret a terminal rejection during replay so an upgraded client
+// does not acknowledge it as success and leave the optimistic row protected
+// forever.
+function unwrapLegacyReceiptActionResponse(
+  action: string,
+  response: unknown,
+  legacyReceiptActions: ReadonlySet<string>,
+): unknown {
+  if (!legacyReceiptActions.has(action) ||
+      !response || typeof response !== "object") {
+    return response;
+  }
+  const receipt = response as Partial<PublicCommandReceipt>;
+  if (receipt.status === "rejected") {
+    if (!receipt.rejection?.code || !receipt.rejection.message) {
+      throw new Error("Rejected command receipt is missing rejection details");
+    }
+    throw new CommandReceiptRejectedError(receipt.rejection);
+  }
+  return response;
+}
+
+// The server rejects `undefined` anywhere in the payload. Action functions are
+// free to leave optional args/return values as `undefined`, so normalize at
+// the dispatch boundary instead of forcing every call site to do it.
+function sanitizeForTransport(value: any): any {
+  if (value === undefined) return null;
+  if (Array.isArray(value)) return value.map(sanitizeForTransport);
+  if (value && typeof value === "object") {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (v !== undefined) out[k] = sanitizeForTransport(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** patchesNow's answer for a send whose every cell a later send owns. */
+const NOTHING_LEFT = Symbol("nothing left to send");
+
+/** `grouped` without `cells` (table\0row\0field, or table\0row for a whole
+ *  row value); the same object when none of them is in it. */
+function withoutCells(grouped: Record<string, Record<string, any>> | undefined, cells: ReadonlySet<string>): Record<string, Record<string, any>> | undefined {
+  if (!grouped || cells.size === 0) return grouped;
+  let out: Record<string, Record<string, any>> | null = null;
+  for (const [table, rows] of Object.entries(grouped)) {
+    for (const [row, fields] of Object.entries(rows ?? {})) {
+      const whole = !(fields && typeof fields === "object" && !Array.isArray(fields));
+      const drop = whole
+        ? cells.has(`${table}\u0000${row}`)
+        : Object.keys(fields).some((f) => cells.has(`${table}\u0000${row}\u0000${f}`));
+      if (!drop) continue;
+      out ??= Object.fromEntries(Object.entries(grouped).map(([t, r]) => [t, { ...r }]));
+      if (whole) {
+        delete out[table]![row];
+      } else {
+        const kept = Object.fromEntries(Object.entries(fields).filter(([f]) => !cells.has(`${table}\u0000${row}\u0000${f}`)));
+        if (Object.keys(kept).length > 0) out[table]![row] = kept;
+        else delete out[table]![row];
+      }
+      if (Object.keys(out[table]!).length === 0) delete out[table];
+    }
+  }
+  return out ?? grouped;
+}
+
+async function dispatchWithRetry(
+  fn: DispatchFn,
+  action: string,
+  args: any,
+  grouped: any,
+  result: any,
+  onError?: (action: string, error: unknown, args?: unknown) => void,
+  retryDelays: number[] = RETRY_DELAYS,
+  assertCurrent: () => void = () => {},
+  // Asked after a transient failure, before the retry: false stops here.
+  keepRetrying?: () => boolean,
+  // Asked before every attempt: the row patches to send now (a later send may
+  // own some of them by then), or NOTHING_LEFT when no cell is left to send.
+  patchesNow?: () => any,
+): Promise<any> {
+  const safeArgs = sanitizeForTransport(args);
+  let safeGrouped = grouped !== undefined ? sanitizeForTransport(grouped) : undefined;
+  const safeResult = result === undefined ? null : sanitizeForTransport(result);
+  // Lifted out of the envelope here, in the one place every dispatch passes
+  // through — the first send and every outbox replay. A transport that names
+  // the command id as its own field can forward this argument without the app
+  // having to remember that `result` also carries it.
+  const commandId = isReceiptActionEnvelope(result) ? result.commandId : undefined;
+  for (let attempt = 0; ; attempt++) {
+    assertCurrent();
+    if (patchesNow) {
+      const now = patchesNow();
+      if (now === NOTHING_LEFT) return {};
+      safeGrouped = now !== undefined ? sanitizeForTransport(now) : undefined;
+    }
+    try {
+      const response = await fn(action, safeArgs, safeGrouped, safeResult, commandId);
+      assertCurrent();
+      return response;
+    } catch (e) {
+      assertCurrent();
+      if (attempt >= retryDelays.length || isPermanentDispatchError(e)) {
+        assertCurrent();
+        onError?.(action, e, args);
+        throw e;
+      }
+      if (keepRetrying && !keepRetrying()) throw new DispatchOvertakenError(action, e);
+      await new Promise(r => setTimeout(r, retryDelays[attempt]));
+      assertCurrent();
+    }
+  }
+}
+
+const sameValue = sameShape;
+// A server value echoes a lock's value. A server may omit a cleared field
+// where the lock holds null, so the two spellings of "clear" agree here.
+const echoes = (server: unknown, value: unknown) => (server == null && value == null) || sameShape(server, value);
+
+/**
+ * The field locks one action planted: every field entry in `nextPending` that
+ * is new or replaced, with the row value and lock it displaced. Kept with the
+ * dispatch so a permanent refusal can undo exactly this action.
+ */
+export function collectActionFieldLocks(
+  prevPending: Record<string, PendingEntry>,
+  nextPending: Record<string, PendingEntry>,
+  prevState: Record<string, any>,
+  rowKeyOf: (key: string) => string = () => "_id",
+): ActionFieldLock[] {
+  const locks: ActionFieldLock[] = [];
+  for (const [key, entry] of Object.entries(nextPending)) {
+    if (!entry || prevPending[key] === entry) continue;
+    const first = key.indexOf(":");
+    if (first === -1) continue;
+    const storeKey = key.slice(0, first);
+    const slice = prevState[storeKey];
+    const base = {
+      key, storeKey, ts: entry.ts ?? 0,
+      ...(entry.lock !== undefined ? { lock: entry.lock } : {}),
+      ...(prevPending[key] ? { priorLock: prevPending[key] } : {}),
+    };
+    if (entry.type === "field") {
+      // table:id:field, where the id may itself carry colons.
+      const last = key.lastIndexOf(":");
+      if (last <= first) continue;
+      const recordId = key.slice(first + 1, last);
+      const field = key.slice(last + 1);
+      const rowKey = rowKeyOf(storeKey);
+      const row = lockedRow(slice, recordId, rowKey);
+      locks.push({ ...base, recordId, field, value: entry.value, prior: row?.[field], hadPrior: !!row && field in row, rowKey });
+    } else if (entry.type === "include" || entry.type === "exclude") {
+      const recordId = key.slice(first + 1);
+      if (!Array.isArray(slice)) {
+        // A collection row added or removed. A refusal takes the row back
+        // out (or puts it back): on a delta collection the server's next
+        // push never would, and the lock would keep a phantom row alive.
+        const prior = slice && typeof slice === "object" ? slice[recordId] : undefined;
+        locks.push({
+          ...base, recordId, field: "", value: entry.value,
+          prior, hadPrior: prior !== undefined, membership: entry.type,
+        });
+        continue;
+      }
+      // A list row added or removed.
+      const rowKey = rowKeyOf(storeKey);
+      const index = slice.findIndex((r: any) => r?.[rowKey] === recordId);
+      locks.push({
+        ...base, recordId, field: "", value: entry.value,
+        prior: index === -1 ? undefined : slice[index], hadPrior: index !== -1,
+        membership: entry.type, rowKey, index,
+      });
+    }
+  }
+  return locks;
+}
+
+/**
+ * Undo a refused action's field locks. A lock a later write has replaced is
+ * left alone (that write owns the field now); otherwise the lock goes (or the
+ * one it displaced comes back) and the row gets its prior value, so the
+ * control stops asserting a value the server refused and the next push is
+ * free to land. Returns the next pending map and the rows it rewrote, or null
+ * when nothing was still this action's.
+ */
+export function releaseActionFieldLocks(
+  state: Record<string, any>,
+  locks: ActionFieldLock[],
+  refusedLock?: (key: string, entry: PendingEntry) => ActionFieldLock | undefined,
+): {
+  pending: Record<string, PendingEntry>;
+  slices: Record<string, any>;
+  rows: Array<{ storeKey: string; recordId: string; row: any }>;
+} | null {
+  const current = (state.pending ?? {}) as Record<string, PendingEntry>;
+  let pending: Record<string, PendingEntry> | null = null;
+  const slices: Record<string, any> = {};
+  const rows: Array<{ storeKey: string; recordId: string; row: any }> = [];
+  for (const lock of locks) {
+    if (!sameLock(current[lock.key], lock)) continue;
+    if (!pending) pending = { ...current };
+    // The lock this one displaced may belong to a send the server already
+    // refused (two writes of one cell in flight, refused in send order). Its
+    // value never reached the server, so step back past it to what it
+    // displaced in turn. A lock is visited once, so the walk always ends.
+    let { prior, hadPrior, priorLock, index } = lock;
+    let refused: ActionFieldLock | undefined;
+    const visited = new Set<ActionFieldLock>([lock]);
+    // What the server said while this lock, and every refused lock it stepped
+    // past, hid the field: oldest first, so the last is what it holds now.
+    let hidden: unknown[] = current[lock.key]?.seen ?? [];
+    while (priorLock && (refused = refusedLock?.(lock.key, priorLock)) && !visited.has(refused)) {
+      visited.add(refused);
+      hidden = [...(priorLock.seen ?? []), ...hidden];
+      ({ prior, hadPrior, priorLock } = refused);
+      index = refused.index ?? index;
+    }
+    // A displaced lock the server echoed while it was displaced has landed; no
+    // later echo would clear it, so it is not brought back.
+    if (priorLock && priorLock.type === "field" && hidden.some((v) => echoes(v, priorLock!.value))) {
+      priorLock = undefined;
+    }
+    if (priorLock) {
+      // It carries on what the server said meanwhile, for its own refusal.
+      pending[lock.key] = priorLock.type === "field" ? hidden.reduce(lockSaw, priorLock) : priorLock;
+    } else {
+      delete pending[lock.key];
+      // The server spoke after this write: its newest value is the row's.
+      if (hidden.length > 0) {
+        prior = hidden[hidden.length - 1];
+        hadPrior = prior !== undefined;
+      }
+    }
+    const slice = lock.storeKey in slices ? slices[lock.storeKey] : state[lock.storeKey];
+    const rowKey = lock.rowKey ?? "_id";
+    if (lock.membership) {
+      if (!Array.isArray(slice)) {
+        if (!slice || typeof slice !== "object") continue;
+        const present = slice[lock.recordId] !== undefined;
+        if (lock.membership === "include" && present && !hadPrior) {
+          const { [lock.recordId]: _gone, ...rest } = slice;
+          slices[lock.storeKey] = rest;
+          rows.push({ storeKey: lock.storeKey, recordId: lock.recordId, row: undefined });
+        } else if (lock.membership === "exclude" && !present && hadPrior) {
+          slices[lock.storeKey] = { ...slice, [lock.recordId]: prior };
+          rows.push({ storeKey: lock.storeKey, recordId: lock.recordId, row: prior });
+        }
+        continue;
+      }
+      const at = slice.findIndex((r: any) => r?.[rowKey] === lock.recordId);
+      if (lock.membership === "include" && at !== -1) {
+        slices[lock.storeKey] = slice.filter((_: any, i: number) => i !== at);
+      } else if (lock.membership === "exclude" && at === -1 && hadPrior) {
+        const out = [...slice];
+        out.splice(Math.min(index ?? out.length, out.length), 0, prior);
+        slices[lock.storeKey] = out;
+      }
+      continue;
+    }
+    const baseRow = lockedRow(slice, lock.recordId, rowKey);
+    if (!baseRow || !sameValue(baseRow[lock.field], lock.value)) continue;
+    const row = { ...baseRow };
+    if (hadPrior) row[lock.field] = prior;
+    else delete row[lock.field];
+    slices[lock.storeKey] = withLockedRow(slice, lock.recordId, row, rowKey);
+    rows.push({ storeKey: lock.storeKey, recordId: lock.recordId, row });
+  }
+  return pending ? { pending, slices, rows } : null;
+}
+
+// A lock names its row the same way for every store shape: a collection by
+// key, a list by the row's identity field, a singleton by the empty id.
+function lockedRow(slice: any, recordId: string, rowKey = "_id"): any {
+  if (recordId === "") return slice && typeof slice === "object" && !Array.isArray(slice) ? slice : undefined;
+  if (Array.isArray(slice)) return slice.find((r: any) => r?.[rowKey] === recordId);
+  return slice?.[recordId];
+}
+
+function withLockedRow(slice: any, recordId: string, row: any, rowKey = "_id"): any {
+  if (recordId === "") return row;
+  if (Array.isArray(slice)) return slice.map((r: any) => (r?.[rowKey] === recordId ? row : r));
+  return { ...slice, [recordId]: row };
+}
+
+/**
+ * Scan mutative patches from an action() and auto-generate pending entries
+ * for synced collections. Returns null if no pending changes needed.
+ *
+ * A local-first list or singleton is compared before and after the action
+ * (a splice, an unshift or a `list[i] = {...}` patches positions, not rows).
+ * Locks use the collection key shape: a list row is named by its identity
+ * field (rowKeyOf, default `_id`), a row the action added is an include, one
+ * it removed an exclude, and each top-level field it changed a field lock. A
+ * singleton is the empty id: store::field.
+ */
+export function generateAutoPending(
+  patches: Patch[],
+  currentPending: Record<string, any>,
+  isProtectedSyncCollection: (key: string) => boolean,
+  hideAckFields: ReadonlySet<string>,
+  isUnprotectedField?: (key: string, field: string) => boolean,
+  shape?: {
+    kindOf: (key: string) => "collection" | "list" | "singleton" | "scalar";
+    rowKeyOf?: (key: string) => string;
+    prevState: Record<string, any>;
+    nextState: Record<string, any>;
+  },
+): Record<string, any> | null {
+  let result: Record<string, any> | null = null;
+  const now = Date.now();
+  // The hide value is the server acknowledgement identity; `now` below is
+  // merely this middleware pass's freshness stamp and need not equal it.
+  const hideAcks = new Map<string, number>();
+  if (hideAckFields.size > 0) {
+    for (const patch of patches) {
+      const path = patch.path as (string | number)[];
+      if (path.length < 3) continue;
+      const storeKey = String(path[0]);
+      const field = String(path[2]);
+      if (
+        !isProtectedSyncCollection(storeKey) ||
+        !hideAckFields.has(field) ||
+        typeof patch.value !== "number"
+      ) continue;
+      hideAcks.set(`${storeKey}:${String(path[1])}`, patch.value);
+    }
+  }
+
+  // Only exact depth-3 field writes lock a collection field, never deeper: a
+  // deeper patch's value is a LEAF of the field (one pushed array element, one
+  // nested key), and recording it under the field's pending key would
+  // re-assert that leaf AS the whole field on every server push — an array
+  // field then degrades into a bare element object, permanently (the
+  // mismatched shape never echoes, so the lock never retires). Assigning the
+  // whole field is the protection gesture; a deep mutation is an
+  // optimistic-only write the server's next authoritative payload reconciles.
+  // A cleared field (remove op) protects as undefined, which matches the
+  // server echo once the null tombstone lands.
+  const cells = enumerateTouchedCells(
+    patches,
+    {
+      kindOf: (key) => (shape ? shape.kindOf(key) : "collection"),
+      rowKeyOf: shape?.rowKeyOf,
+      include: isProtectedSyncCollection,
+    },
+    shape?.prevState,
+    shape?.nextState,
+  );
+  for (const cell of cells) {
+    if (!cell.lockable) continue;
+    if (cell.field === undefined) {
+      // A row added (include, kept until the server acknowledges it) or
+      // removed (exclude, blocks the server from re-adding it).
+      if (cell.op === "set") continue;
+      if (!result) result = { ...currentPending };
+      result[`${cell.store}:${cell.id}`] = { type: cell.op === "add" ? "include" : "exclude", ts: now, lock: newLockId() };
+      continue;
+    }
+    if (isUnprotectedField?.(cell.store, cell.field)) continue;
+    if (!result) result = { ...currentPending };
+    const ack = cell.shape === "collection" ? hideAcks.get(`${cell.store}:${cell.id}`) : undefined;
+    result[`${cell.store}:${cell.id}:${cell.field}`] = {
+      type: "field",
+      value: cell.lockValue,
+      ts: now,
+      lock: newLockId(),
+      ...(ack !== undefined ? { hideAck: ack } : {}),
+    };
+  }
+  return result;
+}
+
+/** What one committed action call looked like, for the undo capture. */
+export type ActionCommit = {
+  state: any;
+  finalState: any;
+  patches: Patch[];
+  outboxId: string;
+  returnValue: unknown;
+};
+
+type RunActionOpts = {
+  onCommitted?: (commit: ActionCommit) => void;
+  /**
+   * Outbox ids this call's dispatch must not overtake (an undo after the
+   * write it reverses). The send waits for those still on the wire; if one
+   * failed and sits parked, this one parks behind it for the drain.
+   */
+  after?: readonly string[];
+  /**
+   * The ids in `after` this call wholly writes back. Only these may it
+   * overtake while on their first attempt; the rest it waits for.
+   */
+  reverses?: readonly string[];
+  /**
+   * Judges the drafted write before anything commits: false drops it whole
+   * (no state, locks, persistence or dispatch). A redo's re-invoke uses it to
+   * refuse writing over a cell changed since the undo.
+   */
+  vet?: (commit: { state: any; nextState: any; patches: Patch[] }) => boolean;
+};
+
+export type MiddlewareOptions = {
+  retryDelays?: number[];
+  // Test seams for the storage watchdog — production always uses the exported
+  // constants; tests shrink them to avoid real multi-second sleeps.
+  storageWatchdogMs?: number;
+  storageWatchdogMaxLagMs?: number;
+  storageWatchdogRecheckMs?: number;
+  // Reuse maps already derived from the same registry.
+  registryMaps?: RegistryMaps;
+  // Test seam for the outbox owner locks (outboxOwner.ts); production uses
+  // navigator.locks. null = no lock manager: every row is drainable.
+  lockManager?: LockManagerLike | null;
+};
+
+export function mutativeMiddleware(
+  creator: any,
+  platformConfig: PlatformConfig,
+  opts?: MiddlewareOptions,
+): any {
+  const retryDelays = opts?.retryDelays ?? RETRY_DELAYS;
+  const watchdogMs = opts?.storageWatchdogMs ?? STORAGE_WATCHDOG_MS;
+  const watchdogMaxLagMs = opts?.storageWatchdogMaxLagMs ?? STORAGE_WATCHDOG_MAX_TIMER_LAG_MS;
+  const watchdogRecheckMs = opts?.storageWatchdogRecheckMs ?? STORAGE_WATCHDOG_RECHECK_MS;
+  const maps = opts?.registryMaps ?? deriveRegistryMaps(platformConfig.registry);
+  const isServerId = platformConfig.isServerId ?? defaultIsServerId;
+  const hideAckFields = platformConfig.hideAckFields ?? new Set<string>();
+  const mustDeliverActions = platformConfig.mustDeliverActions ?? new Set<string>();
+  const legacyReceiptActions = platformConfig.legacyReceiptActions ?? new Set<string>();
+  const coalesceKeys = platformConfig.outboxCoalesceKeys ?? {};
+  const transformReplayPatches = platformConfig.transformReplayPatches ?? ((p: any) => p);
+  const storageWatchdogHint = platformConfig.storageWatchdogHint;
+  const receiptContinuations = platformConfig.receiptContinuations;
+  const viewGuard = platformConfig.viewGuard;
+  const syncKindOf = (key: string) =>
+    maps.syncKindOf?.(key) ?? platformConfig.syncRegistry?.[key]?.kind ?? "collection";
+  const syncRowKeyOf = (key: string) =>
+    maps.rowKeyOf?.(key) ?? platformConfig.syncRegistry?.[key]?.rowKey ?? "_id";
+  const groupCtx: GroupPatchesContext = {
+    tableMap: maps.dispatchTableMap,
+    fieldToTable: maps.dispatchFieldTableMap,
+    isServerId,
+  };
+  const isMustDeliverEntry = makeIsMustDeliverEntry(
+    mustDeliverActions,
+    platformConfig.mustDeliverExtra,
+  );
+  const outboxFailureDisposition = makeOutboxFailureDisposition(isMustDeliverEntry);
+
+  return (set: any, get: any, api: any) => {
+    // This window's outbox rows carry its owner id; a drain leaves rows another
+    // live window owns to that window (outboxOwner.ts).
+    const lockManager = opts?.lockManager !== undefined ? opts.lockManager : defaultLockManager();
+    const outboxOwner = newOutboxOwnerId();
+    claimOutboxOwner(outboxOwner, lockManager);
+    let dispatchBinding: DispatchBinding | null = null;
+    let dispatchEpoch = 0;
+    let lastOutboxTs = 0;
+    let idbWriteFn: IDBWriteFn | null = null;
+    let dispatchErrorFn: ((action: string, error: unknown, args?: unknown) => void) | undefined;
+    let outboxEnqueueFn: OutboxEnqueueFn | null = null;
+    let outboxRemoveFn: OutboxRemoveFn | null = null;
+    let outboxLoadFn: OutboxLoadFn | null = null;
+    let storageHealthFn: ((healthy: boolean, elapsedMs: number) => void) | null = null;
+    // Follower-mode replication tee: called with every action()'s patches (never
+    // sync()'s), so a window that does not own persistence can still offer its
+    // optimistic writes to the sync host. See replication.ts.
+    let actionTeeFn: ((actionName: string, patches: Patch[], state: any, meta?: ActionTeeMeta) => void) | null = null;
+    const receiptWaiters = new Map<string, ReceiptWaiter>();
+    // Outbox ids whose server dispatch already settled the command (ack or
+    // terminal rejection) — the row is garbage the moment it commits. Dispatch
+    // runs in parallel with the durable enqueue, so the ack can win that race:
+    // retirement waits for the enqueue to settle, then deletes the row. While
+    // an id is in this set, drainOutbox must not re-dispatch it.
+    const retiredOutboxIds = new Set<string>();
+    // Outbox ids whose DIRECT dispatch is still on the wire. The row is parked
+    // before the send, so a drain that runs mid-flight (reconnect, foreground,
+    // or a connection-state tick from the send itself) would deliver the same
+    // command a second time before its receipt has settled. The server only
+    // replays a settled receipt; a running one runs again, which for a chat
+    // message means two agent turns. Skip these until the send resolves.
+    const inFlightOutboxIds = new Set<string>();
+    // How each live send settled, for the dispatches ordered after it
+    // (RunActionOpts.after): delivered, refused for good, or parked in the
+    // outbox after a transient failure. A parked id leaves the set when the
+    // row is retired.
+    type LiveSend = {
+      settled: Promise<"ok" | "refused" | "parked">;
+      /** Failed once and waiting to retry: a later send could overtake it. */
+      retrying: boolean;
+      /** Not sent yet: held behind the sends it follows. */
+      waiting: boolean;
+      /** A send ordered after it went out while this one was on its first attempt. */
+      overtaken: boolean;
+      receipt: boolean;
+      /** The cells it writes, so a later write of one goes behind it while it is held. */
+      writes: ReadonlySet<string>;
+    };
+    const liveSends = new Map<string, LiveSend>();
+    const parkedOutboxIds = new Set<string>();
+    // The cells (table, row, field) each parked row of this page wrote. A
+    // later live send of any of them goes behind the row (as if it named it in
+    // `after`), so the drain cannot land the older value last.
+    const parkedCells = new Map<string, ReadonlySet<string>>();
+    const cellsOf = (grouped: Record<string, Record<string, Record<string, any>>> | undefined) => {
+      const cells = new Set<string>();
+      for (const [table, rows] of Object.entries(grouped ?? {})) {
+        for (const [row, fields] of Object.entries(rows ?? {})) {
+          if (fields && typeof fields === "object" && !Array.isArray(fields)) {
+            for (const field of Object.keys(fields)) cells.add(`${table}\u0000${row}\u0000${field}`);
+          } else cells.add(`${table}\u0000${row}`);
+        }
+      }
+      return cells;
+    };
+    const shares = (a: ReadonlySet<string>, b: ReadonlySet<string>) => {
+      for (const c of a) if (b.has(c)) return true;
+      return false;
+    };
+    // Which sends of this page wrote each cell, by outbox ts, until refused.
+    // A send's retry (or its drain replay) leaves out every cell a send
+    // ordered after it in call order, but not held behind it, wrote: that
+    // send carries the newer value and may land first, and a retry landing
+    // after it would put the older value back on the server for good. A send
+    // held behind this one (its `after`) lands after it anyway.
+    type CellWriter = { ts: number; after?: readonly string[] };
+    const cellWriters = new Map<string, CellWriter[]>();
+    const noteWriter = (ts: number, cells: ReadonlySet<string>, after?: readonly string[]) => {
+      const writer: CellWriter = after?.length ? { ts, after } : { ts };
+      for (const c of cells) {
+        const list = cellWriters.get(c) ?? [];
+        cellWriters.delete(c);
+        cellWriters.set(c, [...list.slice(-7), writer]);
+      }
+      for (const c of cellWriters.keys()) {
+        if (cellWriters.size <= 4096) break;
+        cellWriters.delete(c);
+      }
+    };
+    const forgetWriter = (ts: number, cells: ReadonlySet<string>) => {
+      for (const c of cells) {
+        const list = cellWriters.get(c)?.filter((w) => w.ts !== ts);
+        if (list?.length) cellWriters.set(c, list);
+        else cellWriters.delete(c);
+      }
+    };
+    const laterOwned = (ts: number, id: string, cells: ReadonlySet<string>): Set<string> => {
+      const out = new Set<string>();
+      for (const c of cells) if (cellWriters.get(c)?.some((w) => w.ts > ts && !w.after?.includes(id))) out.add(c);
+      return out;
+    };
+    const replayAction = platformConfig.undo?.replayAction;
+    // The row patches a send of `raw` (outbox ts `ts`) sends now: without the
+    // cells a later send owns. Its locks on those cells are noted as never
+    // landed, so a refusal of that later send rolls back past them to what
+    // the server holds.
+    const patchesNowFor = (action: string, id: string, ts: number, raw: Record<string, Record<string, any>> | undefined, locks: ActionFieldLock[] | undefined) => {
+      const trimmed = new Set<string>();
+      return () => {
+        const owned = laterOwned(ts, id, cellsOf(raw));
+        if (owned.size === 0) return raw;
+        const fresh = (locks ?? []).filter((l) => {
+          if (l.membership || trimmed.has(l.key)) return false;
+          const path = l.recordId === "" ? [l.storeKey, l.field] : [l.storeKey, l.recordId, l.field];
+          const lockCells = cellsOf(groupPatchesByTable([{ op: "replace", path, value: l.value }], get(), groupCtx));
+          return [...lockCells].some((c) => owned.has(c));
+        });
+        for (const l of fresh) trimmed.add(l.key);
+        if (fresh.length > 0) noteNeverLanded(fresh);
+        const left = withoutCells(raw, owned);
+        if (!left || Object.keys(left).length === 0) return action === replayAction ? NOTHING_LEFT : undefined;
+        return left;
+      };
+    };
+    // The sends a new write of `cells` must follow: every parked row, and
+    // every live send not yet out (held behind its own `after`) or retrying,
+    // that wrote one of them. Live sends otherwise leave in call order, so
+    // only a held or retrying one could land after the new write.
+    const heldOverlapping = (cells: ReadonlySet<string>): string[] => {
+      if (cells.size === 0) return [];
+      const out: string[] = [];
+      for (const [id, wrote] of parkedCells) if (parkedOutboxIds.has(id) && shares(cells, wrote)) out.push(id);
+      for (const [id, s] of liveSends) if ((s.waiting || s.retrying) && shares(cells, s.writes)) out.push(id);
+      return out;
+    };
+    // Live sends still on their first attempt whose every cell the new write
+    // writes again. They left first, but a transient failure would retry one
+    // after the new write landed and put its older value back. The new write
+    // carries the newer value of every cell they wrote, so it supersedes them:
+    // they are overtaken, and a failure of theirs is dropped, at no cost to
+    // the new write. (A send the new write covers only in part keeps its
+    // retry; waiting for it up front would hold every later edit of the cell
+    // behind a request that may hang.) Sends the caller already named, an undo
+    // step's own `after` judged with what the step means, keep that judgement.
+    const stampFields = platformConfig.undo?.stampFields;
+    const supersededInFlight = (cells: ReadonlySet<string>, named: readonly string[] = []): string[] => {
+      const out: string[] = [];
+      if (cells.size === 0) return out;
+      for (const [id, s] of liveSends) {
+        if (named.includes(id) || s.waiting || s.retrying || s.receipt || s.writes.size === 0) continue;
+        let all = true;
+        for (const c of s.writes) {
+          // A stamp ("updated_at") is restamped by every write, never the
+          // value the user cares about: it does not keep a send alive.
+          if (!cells.has(c) && !stampFields?.has(c.slice(c.lastIndexOf("\u0000") + 1))) { all = false; break; }
+        }
+        if (all) out.push(id);
+      }
+      return out;
+    };
+    // How a send ordered after `after` goes out. Sends leave in call order,
+    // so one still on its first attempt cannot be overtaken: the follower
+    // goes at once and marks it overtaken, so a failure of it is not retried
+    // after the follower landed. One already retrying (or a receipt, whose
+    // ambiguous failures replay) is waited for. One parked in the outbox
+    // holds the follower there too (false), so the drain keeps ts order.
+    // Null: send now.
+    // Only a send the follower wholly writes back (`reverses`) can be
+    // overtaken: a dropped failure of any other would leave a write of it
+    // the follower never makes, so those are waited for too.
+    const settledInOrder = (
+      after: readonly string[] | undefined,
+      reverses: readonly string[] | undefined,
+    ): Promise<boolean> | null => {
+      if (!after?.length) return null;
+      const overtakable = new Set(reverses ?? []);
+      const live = after
+        .map((id) => [id, liveSends.get(id)] as const)
+        .filter((e): e is readonly [string, LiveSend] => !!e[1]);
+      const parked = () => after.some((id) => parkedOutboxIds.has(id));
+      if (live.some(([id, s]) => s.retrying || s.waiting || s.receipt || !overtakable.has(id))) {
+        return Promise.all(live.map(([, s]) => s.settled)).then(() => !parked());
+      }
+      if (parked()) return Promise.resolve(false);
+      for (const [, s] of live) s.overtaken = true;
+      return null;
+    };
+    // coalesceKey → newest enqueued row for that key (by entry ts — enqueue
+    // COMPLETIONS can invert order under slow storage). A newer row retires
+    // the older one; an older row that completes late retires itself.
+    const coalescedOutboxIds = new Map<string, { id: string; ts: number }>();
+
+    const retireOutboxEntry = async (
+      id: string,
+      enqueued: Promise<unknown> | null,
+    ) => {
+      retiredOutboxIds.add(id);
+      if (draining) retiredSinceDrainLoad.add(id);
+      parkedOutboxIds.delete(id);
+      parkedCells.delete(id);
+      try {
+        // Wait for the row to exist (or for its write to have failed) before
+        // deleting it, so the delete can't lose the race with its own commit.
+        if (enqueued) await enqueued.catch(() => {});
+        await outboxRemoveFn?.(id);
+      } catch {
+        // The id stays in retiredOutboxIds; the next drain skips dispatching
+        // it and retries the removal there.
+        return;
+      }
+      retiredOutboxIds.delete(id);
+    };
+
+    const receiptWaiterFor = (entryId: string): ReceiptWaiter => {
+      const existing = receiptWaiters.get(entryId);
+      if (existing) return existing;
+      let resolve!: (value: unknown) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<unknown>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      const waiter = { promise, resolve, reject };
+      receiptWaiters.set(entryId, waiter);
+      return waiter;
+    };
+
+    const resolveReceiptWaiter = (entryId: string, value: unknown) => {
+      const waiter = receiptWaiters.get(entryId);
+      if (!waiter) return;
+      receiptWaiters.delete(entryId);
+      waiter.resolve(value);
+    };
+
+    // A plain action the server refused for good: undo its field locks (and
+    // the row values they painted) unless a later write owns the field now.
+    // Every lock a refused send planted, so a later refusal of a newer write
+    // to the same cell does not bring one back (releaseActionFieldLocks).
+    // Two writes of one cell can share a millisecond, so a slot holds a list.
+    // Bounded: only the newest few matter, since a refusal follows its send.
+    const refusedLocks = new Map<string, ActionFieldLock[]>();
+    const refusedLockId = (key: string, ts: number | undefined) => `${key}\u0000${ts ?? 0}`;
+    const refusedLockFor = (key: string, entry: PendingEntry): ActionFieldLock | undefined =>
+      refusedLocks.get(refusedLockId(key, entry.ts))?.find((lock) => sameLock(entry, lock));
+    // Locks whose writes never reached the server: a refused send's, and an
+    // overtaken send's whose failure was dropped because a later send writes
+    // it back. A rollback steps back past them (refusedLockFor), so when the
+    // later send is refused too, the cell lands on what the server holds.
+    // An overtaken send dropped on failure stays in the undo history as sent
+    // (its overtaker writes the cell back). When a rollback later steps back
+    // past one of its locks, its write is visibly gone: its dispatch is then
+    // refused for the history too, so the entry it moved goes back with it.
+    const droppedSendOf = new WeakMap<ActionFieldLock, string>();
+    const noteNeverLanded = (locks: ActionFieldLock[], droppedOutboxId?: string) => {
+      for (const lock of locks) {
+        if (droppedOutboxId) droppedSendOf.set(lock, droppedOutboxId);
+        const id = refusedLockId(lock.key, lock.ts);
+        refusedLocks.set(id, [...(refusedLocks.get(id) ?? []), lock]);
+      }
+      for (const id of refusedLocks.keys()) {
+        if (refusedLocks.size <= 256) break;
+        refusedLocks.delete(id);
+      }
+    };
+
+    // `droppedOutboxId`: an overtaken send dropped on failure, whose history
+    // moves only if a rollback later steps back past it (droppedSendOf).
+    const releaseRefusedLocks = (actionName: string, locks: ActionFieldLock[], outboxId?: string, droppedOutboxId?: string) => {
+      // The undo history names its entries by the dispatch that carried them.
+      if (outboxId) markUndoOutboxRefused(outboxId);
+      if (locks.length === 0) return;
+      noteNeverLanded(locks, droppedOutboxId);
+      const state = get();
+      const stepPast = (key: string, entry: PendingEntry) => {
+        const lock = refusedLockFor(key, entry);
+        const dropped = lock && droppedSendOf.get(lock);
+        if (dropped) {
+          droppedSendOf.delete(lock);
+          markUndoOutboxRefused(dropped);
+        }
+        return lock;
+      };
+      const released = releaseActionFieldLocks(state, locks, stepPast);
+      if (!released) return;
+      const next: Record<string, any> = { pending: released.pending, ...released.slices };
+      const patches: Patch[] = [{ op: "replace", path: ["pending"], value: released.pending }];
+      // A collection persists row by row; a list or singleton as one value.
+      for (const { storeKey, recordId, row } of released.rows) {
+        if (recordId !== "" && !Array.isArray(released.slices[storeKey])) {
+          patches.push(
+            row === undefined
+              ? { op: "remove", path: [storeKey, recordId] }
+              : { op: "replace", path: [storeKey, recordId], value: row },
+          );
+        }
+      }
+      for (const [storeKey, slice] of Object.entries(released.slices)) {
+        if (Array.isArray(slice) || !released.rows.some((r) => r.storeKey === storeKey && r.recordId !== "")) {
+          patches.push({ op: "replace", path: [storeKey], value: slice });
+        }
+      }
+      set({ ...state, ...next }, true);
+      if (idbWriteFn) {
+        void Promise.resolve(idbWriteFn(patches, get())).catch((error) => {
+          console.error(`[local-first] failed to persist refused "${actionName}" rollback`, error);
+        });
+      }
+      // A follower's write reached the host as a mut and sits there under a
+      // mirrored lock the server will never echo. Offer the rollback the same
+      // way, field by field, naming the refused locks so the host can release
+      // its mirror instead of locking the restored value.
+      const fieldLocks = locks.filter((l) => !l.membership && l.recordId !== "");
+      if (actionTeeFn && fieldLocks.length > 0) {
+        const after = get();
+        const rollback: Patch[] = fieldLocks.map((l) => ({
+          op: "replace" as const,
+          path: [l.storeKey, l.recordId, l.field],
+          value: (after as any)[l.storeKey]?.[l.recordId]?.[l.field],
+        }));
+        try {
+          actionTeeFn(actionName, rollback, after, { refused: fieldLocks });
+        } catch (error) {
+          console.error(`[local-first] replication tee failed (refused ${actionName})`, error);
+        }
+      }
+    };
+
+    const rejectReceiptWaiter = (entryId: string, error: unknown) => {
+      const waiter = receiptWaiters.get(entryId);
+      if (!waiter) return;
+      receiptWaiters.delete(entryId);
+      waiter.reject(error);
+    };
+
+    const applyReceiptRejection = async (
+      actionName: string,
+      localResult: unknown,
+      outboxId?: string,
+    ): Promise<boolean> => {
+      if (outboxId) markUndoOutboxRefused(outboxId);
+      const handler = get()?._handleReceiptRejection;
+      if (typeof handler !== "function") {
+        console.error(
+          `[local-first] cannot reconcile rejected "${actionName}" receipt: rollback handler is unavailable`,
+        );
+        return false;
+      }
+      try {
+        // This hook is a sync()-wrapped, local-only reducer. It removes or
+        // restores the exact optimistic row and clears its pending protection.
+        const affectedKeys = handler(actionName, localResult);
+        if (!Array.isArray(affectedKeys) || affectedKeys.length === 0) {
+          return false;
+        }
+
+        if (idbWriteFn) {
+          // Ordinary sync() persistence is intentionally fire-and-forget. A
+          // terminal receipt is different: deleting the receipt row before the
+          // rollback reaches disk can resurrect an optimistic ghost after a
+          // crash with no command left to reconcile it. Run an idempotent,
+          // full-key barrier through the same serialized IDB queue and await it.
+          // If the wrapper's first write failed, its persisted shadow was not
+          // advanced, so this call retries the exact outstanding diff.
+          const state = get();
+          const persistencePatches: Patch[] = affectedKeys.map((key) => ({
+            op: "replace",
+            path: [key],
+            value: state[key],
+          }));
+          await idbWriteFn(persistencePatches, state);
+        }
+        return true;
+      } catch (error) {
+        console.error(
+          `[local-first] failed to reconcile rejected "${actionName}" receipt`,
+          error,
+        );
+        return false;
+      }
+    };
+
+    // Whether the acknowledgement (including any allowlisted continuation) is
+    // complete. False deliberately retains the durable row so the next runtime
+    // observes the finished world and retires the intent.
+    const applyReceiptAcknowledgement = (
+      actionName: string,
+      envelope: ReceiptActionEnvelope,
+      serverResult: unknown,
+    ): boolean => {
+      if (!receiptContinuations) return true;
+      const continuation = receiptContinuations.resolve(actionName, envelope.localResult);
+      if (!continuation) return true;
+      return receiptContinuations.apply({
+        actionName,
+        continuation,
+        serverResult,
+        commandId: envelope.commandId,
+        getState: get,
+      });
+    };
+
+    const assertDispatchCurrent = (captured: DispatchBinding) => {
+      if (dispatchBinding !== captured || captured.epoch !== dispatchEpoch) {
+        throw new StaleDispatchBindingError();
+      }
+    };
+
+    function newOutboxId(): string {
+      if (typeof crypto !== "undefined" && (crypto as any).randomUUID) return (crypto as any).randomUUID();
+      return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
+    function nextOutboxTimestamp(): number {
+      lastOutboxTs = Math.max(Date.now(), lastOutboxTs + 1);
+      return lastOutboxTs;
+    }
+
+    let draining = false;
+    let drainAgain = false;
+    // Ids retired while a drain runs. The drain works from a snapshot of the
+    // outbox, so a live send that settles and retires its row after the load
+    // would otherwise be in neither retiredOutboxIds nor inFlightOutboxIds by
+    // the time the drain reaches it, and go out a second time.
+    const retiredSinceDrainLoad = new Set<string>();
+    // Consumers that must not act on a PRE-REPLAY view of server state wait for a
+    // verified-empty durable outbox. A failed/re-queued entry is still a pending
+    // server write, so merely attempting it cannot open this gate.
+    let bootOutboxDrained = false;
+    let outboxGeneration = 0;
+    let pendingOutboxEnqueues = 0;
+    // Enqueues currently outstanding past the watchdog deadline. The banner
+    // reflects "a durable write is stuck RIGHT NOW": it trips when this rises
+    // above zero and clears when the last overdue write settles — a commit at
+    // any speed proves durability is intact, so a tripped write clears itself
+    // instead of waiting for an unrelated later write to be fast.
+    let overdueEnqueues = 0;
+    const markOutboxDirty = () => {
+      bootOutboxDrained = false;
+      outboxGeneration++;
+    };
+    const enqueueOutbox = async (enqueue: OutboxEnqueueFn, entry: OutboxEntry) => {
+      markOutboxDirty();
+      pendingOutboxEnqueues++;
+      // Storage watchdog: an enqueue that hasn't committed by the deadline
+      // means IndexedDB is slow or wedged. Delivery no longer depends on it,
+      // but durability does — report unhealthy so the UI can say so.
+      const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+      const started = now();
+      const elapsed = () => now() - started;
+      let settled = false;
+      let tripped = false;
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      const armWatchdog = (delayMs: number) => {
+        const armedAt = now();
+        watchdog = setTimeout(() => {
+          if (settled) return;
+          // Only trip from a live, running page. A timer that fires far past
+          // its deadline, or into a hidden tab, measured an event-loop pause
+          // (throttled/frozen tab, system sleep) — not IndexedDB. Recheck on
+          // a short leash: a genuinely stuck write still trips once the page
+          // is actually running.
+          const overshotMs = now() - armedAt - delayMs;
+          const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+          if (hidden || overshotMs > watchdogMaxLagMs) {
+            armWatchdog(watchdogRecheckMs);
+            return;
+          }
+          tripped = true;
+          overdueEnqueues++;
+          console.error(
+            `[store] durable enqueue for "${entry.action}" still uncommitted after ${Math.round(elapsed())}ms — IndexedDB is unhealthy; delivery continues, durability is degraded${storageWatchdogHint ? ` (${storageWatchdogHint})` : ""}`,
+          );
+          storageHealthFn?.(false, elapsed());
+        }, delayMs);
+      };
+      armWatchdog(watchdogMs);
+      try {
+        await enqueue(entry);
+        settled = true;
+        if (tripped) {
+          overdueEnqueues--;
+          // Say so out loud: the trip above was an error line, and without a
+          // matching commit line a long stall reads as a permanent wedge.
+          console.warn(
+            `[store] durable enqueue for "${entry.action}" committed after ${Math.round(elapsed())}ms — storage recovered`,
+          );
+        }
+        // Committed — durability is intact, however long it took. Clear the
+        // banner unless another write is still stuck past its deadline.
+        if (overdueEnqueues === 0) storageHealthFn?.(true, elapsed());
+      } catch (error) {
+        settled = true;
+        if (tripped) overdueEnqueues--;
+        // A rejected durable write is the wedge the banner exists for — the
+        // old fast-failure path cleared the watchdog and reported nothing.
+        console.error(
+          `[store] durable enqueue for "${entry.action}" failed after ${Math.round(elapsed())}ms — delivery continues, durability is degraded`,
+          error,
+        );
+        storageHealthFn?.(false, elapsed());
+        throw error;
+      } finally {
+        settled = true;
+        if (watchdog !== undefined) clearTimeout(watchdog);
+        pendingOutboxEnqueues--;
+      }
+      // Coalesce: keep only the newest row per key. Compared by entry ts, not
+      // completion order — a stale row that commits late retires itself.
+      if (entry.coalesceKey) {
+        const prev = coalescedOutboxIds.get(entry.coalesceKey);
+        if (prev && prev.id !== entry.id && prev.ts > entry.ts) {
+          void retireOutboxEntry(entry.id, null);
+        } else {
+          coalescedOutboxIds.set(entry.coalesceKey, { id: entry.id, ts: entry.ts });
+          if (prev && prev.id !== entry.id) void retireOutboxEntry(prev.id, null);
+        }
+      }
+    };
+    async function drainOutbox(countAttempts = true) {
+      const captured = dispatchBinding;
+      const capturedLoad = outboxLoadFn;
+      const capturedRemove = outboxRemoveFn;
+      const capturedEnqueue = outboxEnqueueFn;
+      const capturedError = dispatchErrorFn;
+      if (!captured || !capturedLoad) return;
+      // One drain at a time. drainOutbox runs at boot AND on every reconnect /
+      // tab-visible / interval tick, so overlapping passes are easy to trigger;
+      // serializing them keeps a single in-flight entry from being dispatched
+      // twice at once (redelivery is safe — the server dedups — but pointless
+      // work isn't).
+      if (draining) {
+        drainAgain = true;
+        return;
+      }
+      draining = true;
+      try {
+        const drainGeneration = outboxGeneration;
+        retiredSinceDrainLoad.clear();
+        const live = await liveOutboxOwners(lockManager);
+        // Rows a sibling window owns and is still alive to deliver are not
+        // this drain's: re-sending one it already delivered would land after
+        // that window's later writes and revert them on the server.
+        const loaded = (await capturedLoad()).filter((entry) => !ownedByAnotherLiveWindow(entry, outboxOwner, live));
+        assertDispatchCurrent(captured);
+        // Coalesce across reloads: rows written by a previous page load can
+        // hold several generations of the same key. Keep the newest per key,
+        // delete the rest without dispatching them.
+        const newestByKey = new Map<string, OutboxEntry>();
+        for (const entry of loaded) {
+          if (!entry.coalesceKey) continue;
+          const cur = newestByKey.get(entry.coalesceKey);
+          if (!cur || entry.ts > cur.ts) newestByKey.set(entry.coalesceKey, entry);
+        }
+        // Rows this pass did not deliver: in flight elsewhere, or failed
+        // here. A row ordered after one of them waits for a later pass.
+        const undelivered = new Set<string>();
+        const entries = loaded.filter((entry) => {
+          // A row whose command already settled (ack raced the enqueue commit)
+          // must not re-dispatch; finish its deferred removal instead.
+          if (retiredSinceDrainLoad.has(entry.id)) return false;
+          if (retiredOutboxIds.has(entry.id)) {
+            void retireOutboxEntry(entry.id, null);
+            return false;
+          }
+          if (inFlightOutboxIds.has(entry.id)) {
+            undelivered.add(entry.id);
+            return false;
+          }
+          // A send a later step overtook, stranded by a rebind before it
+          // settled: its reversal is already on the server, so a replay would
+          // land after it and undo the undo. The row goes, as it would have
+          // when that send failed.
+          if (liveSends.get(entry.id)?.overtaken) {
+            releaseRefusedLocks(entry.action, entry.locks ?? [], undefined, entry.id);
+            void retireOutboxEntry(entry.id, null);
+            return false;
+          }
+          if (entry.coalesceKey && newestByKey.get(entry.coalesceKey)?.id !== entry.id) {
+            void retireOutboxEntry(entry.id, null);
+            return false;
+          }
+          if (typeof entry.ts === "number" && Date.now() - entry.ts > OUTBOX_MAX_REPLAY_AGE_MS) {
+            console.error(
+              `[store] dropping ${Math.round((Date.now() - entry.ts) / 86_400_000)}d-old parked "${entry.action}" — too stale to replay`,
+              entry.args,
+            );
+            void retireOutboxEntry(entry.id, null);
+            return false;
+          }
+          return true;
+        });
+        // The outbox exists to survive a reload that lands in the middle of an
+        // in-flight dispatch, AND to re-drive a write the live socket stranded:
+        // a flaky connection can exhaust the in-page retry ladder and park
+        // the write here with no boot in sight, so we also drain on reconnect.
+        // A BOOT replay that fails counts an attempt (capped at
+        // MAX_OUTBOX_BOOT_ATTEMPTS for low-stakes writes; must-deliver writes
+        // never drop). OPPORTUNISTIC reconnect drains pass countAttempts=false:
+        // a failure there leaves the entry exactly as-is, so routine reconnect
+        // churn can't burn through a write's boot budget.
+        for (const entry of entries) {
+          // Settled live while an earlier row of this pass was on the wire.
+          if (retiredSinceDrainLoad.has(entry.id) || retiredOutboxIds.has(entry.id)) continue;
+          if (inFlightOutboxIds.has(entry.id)) {
+            undelivered.add(entry.id);
+            continue;
+          }
+          if (entry.after?.some((id) => undelivered.has(id))) {
+            undelivered.add(entry.id);
+            continue;
+          }
+          try {
+            assertSupportedOutboxOperationSchema(entry);
+            const patchesNow = patchesNowFor(entry.action, entry.id, entry.ts, entry.patches, entry.locks);
+            const response = await dispatchWithRetry(
+              captured.fn,
+              entry.action,
+              entry.args,
+              transformReplayPatches(entry.patches),
+              entry.result,
+              capturedError,
+              retryDelays,
+              () => assertDispatchCurrent(captured),
+              undefined,
+              () => {
+                const now = patchesNow();
+                return now === NOTHING_LEFT ? now : transformReplayPatches(now);
+              },
+            );
+            assertDispatchCurrent(captured);
+            if (isReceiptActionEnvelope(entry.result)) {
+              try {
+                const value = unwrapReceiptActionResponse(entry.result, response);
+                const continuationComplete = applyReceiptAcknowledgement(
+                  entry.action,
+                  entry.result,
+                  value,
+                );
+                if (!continuationComplete) return;
+                resolveReceiptWaiter(entry.id, value);
+              } catch (error) {
+                capturedError?.(entry.action, error, entry.args);
+                if (!(error instanceof CommandReceiptRejectedError)) throw error;
+                if (!(await applyReceiptRejection(entry.action, entry.result.localResult, entry.id))) {
+                  throw new Error(
+                    `Rejected "${entry.action}" receipt could not be reconciled locally`,
+                  );
+                }
+                rejectReceiptWaiter(entry.id, error);
+                await capturedRemove?.(entry.id);
+                continue;
+              }
+            } else {
+              try {
+                unwrapLegacyReceiptActionResponse(entry.action, response, legacyReceiptActions);
+              } catch (error) {
+                capturedError?.(entry.action, error, entry.args);
+                if (!(error instanceof CommandReceiptRejectedError)) throw error;
+                if (!(await applyReceiptRejection(entry.action, entry.result, entry.id))) {
+                  throw new Error(
+                    `Rejected "${entry.action}" receipt could not be reconciled locally`,
+                  );
+                }
+                await capturedRemove?.(entry.id);
+                continue;
+              }
+            }
+            await capturedRemove?.(entry.id);
+          } catch (e) {
+            if (e instanceof StaleDispatchBindingError) return;
+            assertDispatchCurrent(captured);
+            // Refused for good is delivered as far as order goes: nothing
+            // will replay it, so nothing need wait for it.
+            if (!isPermanentDispatchError(e) || isReceiptActionEnvelope(entry.result)) undelivered.add(entry.id);
+            if (e instanceof UnsupportedOutboxOperationSchemaError) {
+              capturedError?.(entry.action, e, entry.args);
+              // Explicit migration is required. Keep the row intact and do not
+              // reinterpret, attempt-count, or dispatch it under this bundle.
+              continue;
+            }
+            // Reported via dispatchErrorFn.
+            // Receipt-backed writes are terminal ONLY when the server returns a
+            // validated rejected receipt (handled above). A thrown "Uncaught",
+            // missing-function/version-skew, or auth-transition error does not
+            // prove that this exact command was durably rejected. Keep its
+            // deduplicated row and waiter even when generic dispatch policy
+            // classifies the transport error as permanent.
+            if (isReceiptActionEnvelope(entry.result)) {
+              if (!countAttempts) continue;
+              const disposition = outboxFailureDisposition(entry);
+              assertDispatchCurrent(captured);
+              if (capturedEnqueue) await enqueueOutbox(capturedEnqueue, disposition.entry);
+              continue;
+            }
+            // Legacy non-receipt actions still treat a permanent refusal as
+            // delivery. Re-driving those forever can only repeat the refusal.
+            if (isPermanentDispatchError(e)) {
+              forgetWriter(entry.ts, cellsOf(entry.patches));
+              releaseRefusedLocks(entry.action, entry.locks ?? [], entry.id);
+              rejectReceiptWaiter(entry.id, e);
+              await capturedRemove?.(entry.id);
+              continue;
+            }
+            if (!countAttempts) continue;
+            const disposition = outboxFailureDisposition(entry);
+            assertDispatchCurrent(captured);
+            if (disposition.keep) {
+              if (capturedEnqueue) await enqueueOutbox(capturedEnqueue, disposition.entry);
+            } else {
+              // Given up: settled like a refusal, and reported as one.
+              const gaveUp = new OutboxGaveUpError(entry.action, e);
+              forgetWriter(entry.ts, cellsOf(entry.patches));
+              releaseRefusedLocks(entry.action, entry.locks ?? [], entry.id);
+              capturedError?.(entry.action, gaveUp, entry.args);
+              rejectReceiptWaiter(entry.id, gaveUp);
+              await capturedRemove?.(entry.id);
+            }
+          }
+        }
+        // Verify the durable queue after every mutation. The initial snapshot is
+        // not sufficient: a failed entry can be re-queued, and a new action can
+        // begin enqueueing while this drain is in flight.
+        const remaining = await capturedLoad();
+        assertDispatchCurrent(captured);
+        // A parked row this drain delivered (or dropped) holds nothing back now.
+        if (parkedOutboxIds.size > 0) {
+          const still = new Set(remaining.map((entry) => entry.id));
+          for (const id of parkedOutboxIds) if (!still.has(id)) parkedOutboxIds.delete(id);
+          for (const id of parkedCells.keys()) if (!parkedOutboxIds.has(id)) parkedCells.delete(id);
+        }
+        bootOutboxDrained = remaining.length === 0 &&
+          pendingOutboxEnqueues === 0 &&
+          drainGeneration === outboxGeneration;
+      } catch (e) {
+        // A binding rotated mid-drain (page-load verification rebind, account
+        // switch). Every drain call site is fire-and-forget, so letting this
+        // escape becomes an unhandled rejection; the successor binding's own
+        // boot drain owns the outbox now, and this pass simply ends.
+        if (!(e instanceof StaleDispatchBindingError)) throw e;
+      } finally {
+        draining = false;
+        if (drainAgain) {
+          drainAgain = false;
+          void drainOutbox(countAttempts);
+        }
+      }
+    }
+
+    // The outbox half of an action: group its patches, park the durable row
+    // and fire the dispatch. Returns what the action call returns.
+    const enqueueDispatch = (
+      key: string,
+      flags: ActionFlags,
+      actionArgs: any[],
+      patches: Patch[],
+      finalState: any,
+      returnValue: any,
+      fieldLocks: ActionFieldLock[],
+      outboxId: string,
+      after?: readonly string[],
+      reverses?: readonly string[],
+    ): any => {
+      const isAsyncAct = flags.asyncAct;
+      const isReceiptAsyncAct = flags.receipt;
+      const grouped =
+        patches.length > 0 ? groupPatchesByTable(patches, finalState, groupCtx) : undefined;
+      const writes = cellsOf(grouped);
+      const superseded = supersededInFlight(writes, after);
+      const behindHeld = heldOverlapping(writes);
+      if (behindHeld.length > 0) after = [...new Set([...(after ?? []), ...behindHeld])];
+      if (superseded.length > 0) {
+        after = [...new Set([...(after ?? []), ...superseded])];
+        reverses = [...new Set([...(reverses ?? []), ...superseded])];
+      }
+      const usesReceiptEnvelope = isReceiptAsyncAct;
+      const returnsPromise = isAsyncAct;
+      const dispatchResult: unknown = usesReceiptEnvelope
+        ? {
+            receiptActionVersion: 1,
+            commandId: outboxId,
+            ...(returnValue !== undefined ? { localResult: returnValue } : {}),
+          } satisfies ReceiptActionEnvelope
+        : returnValue;
+      // Persist the outbound dispatch *before* firing so it survives a
+      // reload mid-flight. Removed only on server acknowledgment; failed
+      // dispatches stay queued and re-fire on next hydrate via drainOutbox.
+      // Enqueued even when dispatchFn isn't wired yet — drainOutbox picks
+      // them up the moment _setDispatch runs.
+      const coalesceKey = outboxCoalesceKeyFor(key, actionArgs, coalesceKeys);
+      const entry = {
+        id: outboxId,
+        action: key,
+        args: actionArgs,
+        patches: grouped,
+        result: dispatchResult,
+        operationSchemaVersion: CURRENT_OUTBOX_OPERATION_SCHEMA_VERSION,
+        // The outbox replays by this index. Strict monotonicity preserves
+        // causal call order even when several dependent actions (create →
+        // delete, fork → send) are queued in the same millisecond.
+        ts: nextOutboxTimestamp(),
+        owner: outboxOwner,
+        ...(coalesceKey ? { coalesceKey } : {}),
+        ...(fieldLocks.length > 0 ? { locks: fieldLocks } : {}),
+        ...(after?.length ? { after: [...after] } : {}),
+      };
+      noteWriter(entry.ts, writes, after);
+      const capturedDispatch = dispatchBinding;
+      const capturedError = dispatchErrorFn;
+      const receiptWaiter = usesReceiptEnvelope ? receiptWaiterFor(outboxId) : null;
+      let enqueueCompleted = false;
+      // Parked unconditionally — a rewire window (boot, HMR, account
+      // switch) can clear the binding while the page stays interactive,
+      // and an un-parked action fired in that window would vanish with
+      // zero trace.
+      const enqueued = outboxEnqueueFn
+        ? enqueueOutbox(outboxEnqueueFn, entry).then(() => {
+            enqueueCompleted = true;
+          })
+        : null;
+      // Mark handled: consumers below attach their own handlers, but none
+      // may exist yet when a storage failure rejects this promise.
+      enqueued?.catch(() => {});
+      if (capturedDispatch) {
+        const send = () => dispatchWithRetry(
+          capturedDispatch.fn,
+          key,
+          actionArgs,
+          grouped,
+          dispatchResult,
+          capturedError,
+          retryDelays,
+          () => assertDispatchCurrent(capturedDispatch),
+          () => {
+            const live = liveSends.get(outboxId);
+            if (live?.overtaken) return false;
+            if (live) live.retrying = true;
+            return true;
+          },
+          patchesNowFor(key, outboxId, entry.ts, grouped, fieldLocks),
+        );
+        // Live sends are not ordered by themselves: a write retrying after a
+        // transient error can land after a later call's send. A call that
+        // names what it must follow waits for it, and parks behind it when
+        // it is parked, so the drain delivers both in ts order.
+        // A send held this way is itself waited for by the sends that
+        // follow it, so the order holds down a chain of followers.
+        const waiting = settledInOrder(after, reverses);
+        const dispatchNow = () => {
+          if (!waiting) return send();
+          return waiting.then((inOrder) => {
+            const live = liveSends.get(outboxId);
+            if (live) live.waiting = false;
+            if (!inOrder) throw new DispatchHeldError(key);
+            return send();
+          });
+        };
+        // Dispatch fires IMMEDIATELY — the durable enqueue runs in
+        // parallel. The outbox is a crash-recovery journal, not a gate:
+        // slow or wedged storage degrades durability (surfaced by the
+        // enqueue watchdog) but must never delay or strand delivery. The
+        // ack-vs-commit race is settled by retireOutboxEntry, which waits
+        // for the enqueue before deleting the row; a crash in that window
+        // merely replays a command the server dedups (client id for
+        // content writes, commandId for receipt actions, LWW for patches).
+        inFlightOutboxIds.add(outboxId);
+        const dispatched = dispatchNow();
+        // Released only after the handlers below have recorded the send's
+        // fate (retired, parked): a drain landing in between would find the
+        // row in neither set and send it again. Handlers on one promise run
+        // in the order they were attached, so each branch attaches this last.
+        const releaseInFlight = () => {
+          inFlightOutboxIds.delete(outboxId);
+        };
+        const settled = dispatched.then(
+          () => "ok" as const,
+          (e) => {
+            if (isPermanentDispatchError(e)) return "refused" as const;
+            if (e instanceof DispatchOvertakenError) {
+              // Its write never landed. While the send that overtook it holds
+              // the cell this only records that; if that send was refused and
+              // rolled back to this one's lock, it rolls this one back too,
+              // and its history with it.
+              releaseRefusedLocks(key, fieldLocks, undefined, outboxId);
+              return "ok" as const;
+            }
+            // Without an outbox row nothing will replay it, so nothing waits on it.
+            if (!enqueued) return "ok" as const;
+            parkedOutboxIds.add(outboxId);
+            if (writes.size > 0) parkedCells.set(outboxId, writes);
+            // Held behind a parked write: the drain sends both, in order.
+            if (e instanceof DispatchHeldError) {
+              void enqueued.then(() => {
+                if (dispatchBinding) void drainOutbox(false);
+              }, () => {});
+            }
+            return "parked" as const;
+          },
+        );
+        liveSends.set(outboxId, { settled, retrying: false, waiting: !!waiting, overtaken: false, receipt: usesReceiptEnvelope, writes });
+        void settled.then(() => liveSends.delete(outboxId));
+        const enqueueDurable = () =>
+          enqueued ? enqueued.then(() => true, () => false) : Promise.resolve(false);
+        if (usesReceiptEnvelope && receiptWaiter) {
+          void dispatched.then(async (response) => {
+            assertDispatchCurrent(capturedDispatch);
+            let completed = false;
+            try {
+              const value = unwrapReceiptActionResponse(
+                dispatchResult as ReceiptActionEnvelope,
+                response,
+              );
+              const continuationComplete = applyReceiptAcknowledgement(
+                key,
+                dispatchResult as ReceiptActionEnvelope,
+                value,
+              );
+              if (!continuationComplete) return;
+              resolveReceiptWaiter(outboxId, value);
+              completed = true;
+            } catch (error) {
+              capturedError?.(key, error, actionArgs);
+              if (error instanceof CommandReceiptRejectedError) {
+                const reconciled = await applyReceiptRejection(
+                  key,
+                  (dispatchResult as ReceiptActionEnvelope).localResult,
+                  outboxId,
+                );
+                if (reconciled) {
+                  completed = true;
+                  rejectReceiptWaiter(outboxId, error);
+                }
+              } else if (!(await enqueueDurable())) {
+                // Without a committed outbox row there is no future replay
+                // that can resolve an ambiguous response.
+                rejectReceiptWaiter(outboxId, error);
+              }
+            }
+            // Acknowledgement (including its allowlisted continuation) or
+            // a durable rejection is complete. A malformed response or an
+            // unavailable continuation runtime is ambiguous, so retain the
+            // deduplicated command for a later replay.
+            if (completed) {
+              await retireOutboxEntry(outboxId, enqueued);
+              void drainOutbox(false);
+            }
+          }, async (error) => {
+            let current = true;
+            try {
+              assertDispatchCurrent(capturedDispatch);
+            } catch {
+              current = false;
+            }
+            // With a durable row, ALL thrown receipt errors are ambiguous.
+            // Only a validated rejected receipt is terminal; the durable
+            // command row owns version-skew, auth-transition, and
+            // transport recovery too.
+            if (await enqueueDurable()) {
+              if (!current && dispatchBinding) void drainOutbox(false);
+              return;
+            }
+            // Durability itself failed (or no outbox was installed). The
+            // command cannot honestly remain pending.
+            rejectReceiptWaiter(outboxId, error);
+          }).catch((error) => {
+            if (error instanceof StaleDispatchBindingError) {
+              if (enqueueCompleted) {
+                if (dispatchBinding) void drainOutbox(false);
+              } else {
+                rejectReceiptWaiter(outboxId, error);
+              }
+              return;
+            }
+            // A removal/storage error after acknowledgement leaves the
+            // receipt row replayable. The waiter may already be resolved;
+            // never reinterpret this as a domain rejection.
+            capturedError?.(key, error, actionArgs);
+          });
+          dispatched.then(releaseInFlight, releaseInFlight);
+          return receiptWaiter.promise;
+        }
+        const promise = dispatched.then(async (r) => {
+          assertDispatchCurrent(capturedDispatch);
+          await retireOutboxEntry(outboxId, enqueued);
+          void drainOutbox(false);
+          return r;
+        }, async (e) => {
+          if (e instanceof StaleDispatchBindingError) throw e;
+          assertDispatchCurrent(capturedDispatch);
+          // Permanent rejection: the server answered and said no — remove
+          // the parked copy so the drain loops don't re-litigate it forever,
+          // and lift the locks it planted so the refused value stops
+          // standing over the server's.
+          if (isPermanentDispatchError(e)) {
+            forgetWriter(entry.ts, writes);
+            releaseRefusedLocks(key, fieldLocks, outboxId);
+            await retireOutboxEntry(outboxId, enqueued);
+            void drainOutbox(false);
+          }
+          // Its reversal is already on the server: a replay of this row would
+          // land after it and undo the undo, so the row goes.
+          if (e instanceof DispatchOvertakenError) {
+            await retireOutboxEntry(outboxId, enqueued);
+            void drainOutbox(false);
+          }
+          throw e;
+        });
+        dispatched.then(releaseInFlight, releaseInFlight);
+        if (returnsPromise) return promise;
+        promise.catch(() => {});
+      } else {
+        // No live binding (boot, HMR rewire, account-switch window): the
+        // entry is only "parked" after its enqueue promise fulfills.
+        // `_setDispatch` can race that commit, so every successful enqueue
+        // also rechecks for a newly-installed binding.
+        // It is parked for ordering at once: a send made after the binding
+        // returns, before the drain has loaded this row, follows it the way
+        // it follows a row a failed live send parked, so the drain delivers
+        // both in ts order. The drain's end (or a failed enqueue) clears it.
+        if (enqueued) {
+          parkedOutboxIds.add(outboxId);
+          if (writes.size > 0) parkedCells.set(outboxId, writes);
+          enqueued.catch(() => {
+            parkedOutboxIds.delete(outboxId);
+            parkedCells.delete(outboxId);
+          });
+        }
+        console.warn(`[sync] dispatch not wired; ${enqueued ? `enqueueing "${key}" for later delivery` : `"${key}" was dropped (no outbox)`}`);
+        // An asyncAction promises its caller the server result. Returning
+        // the raw returnValue here (historically undefined) made callers'
+        // `.then(...)` throw synchronously — a create flow lost its error
+        // handler that way and could vanish with no toast and no discard.
+        // Reject honestly instead: the caller's catch runs now; a parked
+        // entry still delivers via drainOutbox.
+        if (returnsPromise) {
+          if (usesReceiptEnvelope && receiptWaiter && enqueued) {
+            void enqueued.then(
+              () => {
+                // Wiring can race the IndexedDB commit: its boot drain may
+                // have loaded an empty outbox a moment before this row
+                // became visible. Recheck immediately once durability is
+                // confirmed so the caller does not wait for a heartbeat.
+                if (dispatchBinding) void drainOutbox(false);
+              },
+              (error) => {
+                rejectReceiptWaiter(outboxId, error);
+              },
+            );
+            return receiptWaiter.promise;
+          }
+          if (usesReceiptEnvelope) {
+            rejectReceiptWaiter(
+              outboxId,
+              new DispatchNotWiredError(key, false),
+            );
+            return receiptWaiter?.promise;
+          }
+          if (enqueued) {
+            return enqueued.then(() => {
+              if (dispatchBinding) void drainOutbox(false);
+              throw new DispatchNotWiredError(key, true);
+            });
+          }
+          return Promise.reject(new DispatchNotWiredError(key, false));
+        }
+        if (enqueued) {
+          void enqueued.then(
+            () => {
+              if (dispatchBinding) void drainOutbox(false);
+            },
+            (error) => {
+              capturedError?.(key, error, actionArgs);
+              if (!capturedError) {
+                console.error(`[local-first] failed to park "${key}"`, error);
+              }
+            },
+          );
+        }
+      }
+      return returnValue;
+    };
+
+    // One action call, end to end: run the recipe on a draft, plant pending
+    // locks, police the view, commit, persist, tee, and hand the outbox half
+    // to enqueueDispatch. Every write path shares it: a wrapped creator, and
+    // an undo replay, which supplies its own recipe under a target's name.
+    const runAction = (
+      key: string,
+      flags: ActionFlags,
+      recipe: (draft: any) => unknown,
+      actionArgs: any[],
+      opts?: RunActionOpts,
+    ): any => {
+      const isAct = flags.act;
+      const isAsyncAct = flags.asyncAct;
+      {
+        const state = get();
+        let returnValue: any;
+        const effects: Array<() => void> = [];
+        commitEffectFrames.push(effects);
+        let nextState: any;
+        let patches: Patch[];
+        try {
+          [nextState, patches] = mutativeCreate(
+            state,
+            (draft: any) => {
+              returnValue = recipe(draft);
+            },
+            { enablePatches: { pathAsArray: true } }
+          );
+        } finally {
+          commitEffectFrames.pop();
+        }
+        if (opts?.vet && !opts.vet({ state, nextState, patches })) return undefined;
+
+        // Auto-generate pending entries for synced collections so local-first
+        // writes are protected from server sync overwrites.
+        let finalState = nextState;
+        let finalPatches: Patch[] = patches;
+        let fieldLocks: ActionFieldLock[] = [];
+        if (isAct || isAsyncAct) {
+          const newPending = generateAutoPending(
+            patches,
+            nextState.pending ?? {},
+            maps.isProtectedSyncCollection,
+            hideAckFields,
+            maps.isUnprotectedField,
+            { kindOf: syncKindOf, rowKeyOf: syncRowKeyOf, prevState: state, nextState },
+          );
+          if (newPending) {
+            fieldLocks = collectActionFieldLocks(state.pending ?? {}, newPending, state, syncRowKeyOf);
+            finalState = { ...nextState, pending: newPending };
+            // Synthetic patch so IDB persists the updated pending
+            finalPatches = [...patches, { op: "replace" as const, path: ["pending"] as (string | number)[], value: newPending }];
+          }
+        }
+
+        // View-motion guard: an undeclared change of the visible view is
+        // reverted before it ever renders.
+        if (viewGuard) {
+          const viewChanges = viewGuard.fields
+            .filter((f) => (state as any)[f] !== (finalState as any)[f])
+            .map((f) => ({ field: f, from: (state as any)[f] ?? null, to: (finalState as any)[f] ?? null }));
+          const revertFields = viewGuard.audit(viewChanges, key);
+          if (revertFields.length > 0) {
+            const reverted: Record<string, any> = {};
+            for (const f of revertFields) reverted[f] = (state as any)[f];
+            finalState = { ...finalState, ...reverted };
+            finalPatches = finalPatches.filter((p) => !revertFields.includes(String(p.path[0])));
+          }
+        }
+
+        set(finalState, true);
+        runCommitEffects(key, effects);
+
+        if (idbWriteFn && finalPatches.length > 0) {
+          // Synchronous: the storage engine's bulk writes don't block the main
+          // thread, and deferring via requestIdleCallback can lose writes if the
+          // user reloads before idle (e.g. gesture → reload race).
+          void Promise.resolve(idbWriteFn(finalPatches, finalState)).catch((error) => {
+            console.error(`[local-first] failed to persist state (action=${key})`, error);
+          });
+        }
+
+        if ((isAct || isAsyncAct) && actionTeeFn && finalPatches.length > 0) {
+          try {
+            actionTeeFn(key, finalPatches, finalState);
+          } catch (error) {
+            console.error(`[local-first] replication tee failed (action=${key})`, error);
+          }
+        }
+
+        if (isAct || isAsyncAct) {
+          const outboxId = newOutboxId();
+          const result = enqueueDispatch(key, flags, actionArgs, patches, finalState, returnValue, fieldLocks, outboxId, opts?.after, opts?.reverses);
+          // After the dispatch is on its way, and never able to stop it: the
+          // undo capture runs app code (a spec's label, inverse, confirm,
+          // spell), and a bug there must cost the history its entry, never
+          // the committed write its delivery.
+          try {
+            opts?.onCommitted?.({ state, finalState, patches, outboxId, returnValue });
+          } catch (error) {
+            console.error(`[undo] capture failed (action=${key}); nothing recorded`, error);
+          }
+          return result;
+        }
+        return returnValue;
+      }
+    };
+
+    // Raw creators by name, so a replay can run a target action's draft.
+    const rawCreators: Record<string, any> = {};
+
+    // Wrapping one creator entry. Split out of the build loop so a re-evaluated
+    // creator can be rebuilt against THIS closure — see _hotReplaceConfig. The
+    // wrapper carries its creator's flags (see actionKind).
+    const wrapAction = (key: string, val: any): any => {
+      const flags = flagsOf(val);
+      if (!flags.act && !flags.asyncAct && !flags.syn) return val;
+      rawCreators[key] = val;
+      const wrappedFn = (...args: any[]) => {
+        const actionArgs = normalizeZeroArgumentEventCall(val as Function, args);
+        const undo = undoController;
+        const onCommitted = undo?.wants(key, flags)
+          ? (commit: ActionCommit) => undo.capture(key, actionArgs, commit)
+          : undefined;
+        const order = undo?.orderAfter();
+        const vet = undo?.vetFor(key);
+        return runAction(
+          key,
+          flags,
+          (draft) => (val as Function).apply(draft, actionArgs),
+          actionArgs,
+          onCommitted || order || vet ? { onCommitted, after: order?.after, reverses: order?.reverses, vet } : undefined,
+        );
+      };
+      copyActionFlags(val, wrappedFn);
+      return wrappedFn;
+    };
+
+    // Generic undo (PlatformConfig.undo): capture for actions with a spec,
+    // replay through runAction. Absent config = nothing is captured.
+    const undoController: UndoController | null = platformConfig.undo
+      ? createUndoController({
+          config: platformConfig.undo,
+          get,
+          runAction,
+          rawCreator: (name) => rawCreators[name],
+          flagsOf,
+          shape: {
+            declaredKind: (key) => maps.syncKindOf?.(key) ?? platformConfig.syncRegistry?.[key]?.kind,
+            rowKeyOf: syncRowKeyOf,
+            rowGroupOf: (key) => maps.dispatchTableMap[key]?.table ?? key,
+            isProtected: maps.isProtectedSyncCollection,
+            isUnprotectedField: maps.isUnprotectedField,
+            viewFields: new Set(viewGuard?.fields ?? []),
+            ignoreKeys: platformConfig.undo.ignoreKeys,
+            optionalClearFields: platformConfig.optionalClearFields,
+          },
+        })
+      : null;
+
+    const buildWrapped = (cfg: any): Record<string, any> => {
+      const out: Record<string, any> = {};
+      for (const [key, val] of Object.entries(cfg(set, get, api))) {
+        out[key] = wrapAction(key, val);
+      }
+      return out;
+    };
+
+    const wrapped: Record<string, any> = buildWrapped(creator);
+
+    wrapped._setDispatch = (
+      fn: DispatchFn | null,
+      options?: { owner?: object },
+    ) => {
+      dispatchEpoch++;
+      // A send stranded by the rotation never settles under the old binding,
+      // so its row must be eligible for the successor's drain.
+      inFlightOutboxIds.clear();
+      dispatchBinding = fn
+        ? { epoch: dispatchEpoch, fn, owner: options?.owner }
+        : null;
+      // Drain any persisted outbox entries left by a previous page load.
+      if (fn) {
+        markOutboxDirty();
+        void drainOutbox();
+      }
+    };
+
+    wrapped._clearDispatch = (owner: object) => {
+      if (dispatchBinding?.owner !== owner) return;
+      dispatchEpoch++;
+      inFlightOutboxIds.clear();
+      dispatchBinding = null;
+    };
+
+    // Opportunistic re-drive: re-attempt every parked dispatch without counting
+    // a boot attempt. Wire to reconnect / tab-visible / interval so a write the
+    // live socket stranded reaches the server WITHOUT waiting for a reload.
+    wrapped._drainOutbox = () => { void drainOutbox(false); };
+
+    // Whether the durable outbox has been replayed once since load — see
+    // bootOutboxDrained. Polled by boot-eager reconcile passes, which must not
+    // run against a server that hasn't received the writes still parked here.
+    wrapped._hasBootOutboxDrained = () => bootOutboxDrained;
+
+    // Whether a dispatch fired right now would actually reach the server.
+    // Drain ticks poll it and re-bind when stranded.
+    wrapped._isDispatchWired = () => {
+      const b = dispatchBinding;
+      return !!b && b.epoch === dispatchEpoch;
+    };
+
+    wrapped._setIDBWrite = (fn: IDBWriteFn | null) => {
+      idbWriteFn = fn;
+    };
+
+    wrapped._setOutbox = (
+      enqueue: OutboxEnqueueFn | null,
+      remove: OutboxRemoveFn | null,
+      load: OutboxLoadFn | null,
+    ) => {
+      outboxEnqueueFn = enqueue;
+      outboxRemoveFn = remove;
+      outboxLoadFn = load;
+      markOutboxDirty();
+    };
+
+    wrapped._clearRuntimeBindings = () => {
+      dispatchEpoch++;
+      inFlightOutboxIds.clear();
+      dispatchBinding = null;
+      idbWriteFn = null;
+      outboxEnqueueFn = null;
+      outboxRemoveFn = null;
+      outboxLoadFn = null;
+      // The drained flag described the OUTGOING principal's outbox. The successor
+      // has its own principal-scoped rows and has replayed none of them, so
+      // carrying the flag across would tell boot-eager consumers the replay
+      // already happened and let them read the server before the new account's
+      // parked writes ship — the exact race the flag exists to prevent.
+      bootOutboxDrained = false;
+      // The history is the outgoing principal's: an undo of it would write
+      // that account's rows into the next one's store and send them as it.
+      if (undoController) resetUndoHistory();
+      // Receipt waiters intentionally survive a runtime/auth rebind. Their
+      // random entry ids can resolve only when that exact principal-scoped
+      // outbox row drains again; another account cannot present the row. This
+      // keeps a legitimately parked caller pending through token rotation.
+    };
+
+    wrapped._setDispatchError = (fn: (action: string, error: unknown, args?: unknown) => void) => {
+      dispatchErrorFn = fn;
+    };
+
+    // Storage-health signal from the enqueue watchdog: healthy=false while a
+    // durable write is stuck past STORAGE_WATCHDOG_MS (or failed outright),
+    // healthy=true when writes commit and none are overdue. Delivery is
+    // unaffected either way.
+    wrapped._setStorageHealth = (fn: ((healthy: boolean, elapsedMs: number) => void) | null) => {
+      storageHealthFn = fn;
+    };
+
+    wrapped._setActionTee = (fn: ((actionName: string, patches: Patch[], state: any, meta?: ActionTeeMeta) => void) | null) => {
+      actionTeeFn = fn;
+    };
+
+    wrapped._dispatch = (action: string, args: any, patches?: any, result?: any) => {
+      const captured = dispatchBinding;
+      if (!captured) return Promise.reject(new Error("Dispatch not wired"));
+      return dispatchWithRetry(
+        captured.fn,
+        action,
+        args,
+        patches,
+        result,
+        dispatchErrorFn,
+        retryDelays,
+        () => assertDispatchCurrent(captured),
+      );
+    };
+
+    // Police raw setState (writes from outside action()/sync()): the guarded
+    // fields obey the same declare-or-revert rule as store actions. The
+    // middleware's internal `set` is the pre-wrap reference, so action writes
+    // (already audited via patches above) are not double-counted. Functional
+    // partials are exempt — object literals are the only raw write shape for
+    // guarded fields.
+    if (viewGuard) {
+      const origSetState = api.setState;
+      api.setState = (partial: any, replace?: boolean) => {
+        if (partial && typeof partial === "object") {
+          const prev = get();
+          const touched = viewGuard.fields
+            .filter((f) => f in partial && partial[f] !== prev[f])
+            .map((f) => ({ field: f, from: prev[f] ?? null, to: partial[f] ?? null }));
+          const revert = viewGuard.audit(touched, "setState");
+          if (revert.length > 0) {
+            partial = { ...partial };
+            for (const f of revert) delete partial[f];
+          }
+        }
+        return origSetState(partial, replace);
+      };
+    }
+
+    // Dev hot swap: rebuild every action from a freshly evaluated creator
+    // WITHOUT rebuilding this closure, so the dispatch binding, its epoch, IDB
+    // write-through, the durable outbox and any pending receipt waiters all
+    // survive the swap. Only functions and state keys that did not exist before
+    // are applied — live data is left exactly as it is, so an edit to an action
+    // costs no reload and no refetch.
+    wrapped._hotReplaceConfig = (nextConfig: any) => {
+      const next = buildWrapped(nextConfig);
+      const current = get();
+      const patch: Record<string, any> = {};
+      for (const [key, val] of Object.entries(next)) {
+        if (typeof val === "function" || !(key in current)) patch[key] = val;
+      }
+      set(patch);
+    };
+
+    return wrapped;
+  };
+}

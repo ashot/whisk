@@ -1,0 +1,26 @@
+{
+  "name": "@mail/desktop",
+  "version": "0.1.9",
+  "private": true,
+  "productName": "Whisk",
+  "description": "Whisk: email and calendar for your Gmail",
+  "author": "Ashot Petrosian <ashot@almostcandid.com>",
+  "main": "main.js",
+  "scripts": {
+    "web": "cd ../web && bun run build && rm -rf ../desktop/web && cp -R dist ../desktop/web",
+    "dev": "electron .",
+    "build": "bun run web && electron-builder -m --config electron-builder.config.js",
+    "build:local": "bun run web && electron-builder -m --config electron-builder.config.js --config.mac.target=dir",
+    "install:mac": "bun run build:local && pkill -x Whisk; rm -rf /Applications/Whisk.app && cp -R dist/mac-arm64/Whisk.app /Applications/ && open -a Whisk",
+    "release": "scripts/release.sh",
+    "typecheck": "true"
+  },
+  "dependencies": {
+    "@platform/desktop": "file:../../platform/packages/desktop"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^3.1.1",
+    "electron": "^40.0.0",
+    "electron-builder": "^26.0.0"
+  }
+}

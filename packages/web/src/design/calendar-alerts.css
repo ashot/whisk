@@ -1,0 +1,80 @@
+.meeting-alert {
+  position: fixed;
+  z-index: 30;
+  right: 24px;
+  bottom: 22px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: min(390px, calc(100vw - 32px));
+  padding: 14px 12px 14px 18px;
+  border: 1px solid var(--m-rule);
+  border-left: 3px solid var(--m-accent);
+  border-radius: 10px;
+  background: var(--m-bg-raised);
+  color: var(--m-ink);
+  box-shadow: 0 8px 30px #00000012;
+}
+.meeting-alert-body {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  color: inherit;
+}
+.meeting-alert-body strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  font-size: 15px;
+}
+.meeting-alert-when {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--m-ink-muted);
+}
+.meeting-alert-join {
+  color: var(--m-accent);
+  font-size: 13px;
+  padding: 10px 4px;
+  text-decoration: none;
+}
+.meeting-alert-dismiss {
+  color: var(--m-ink-muted);
+  font-size: 20px;
+  width: 36px;
+  height: 36px;
+}
+body:has(.meeting-alert) .toasts,
+body:has(.meeting-alert) .pending-keys {
+  bottom: 110px;
+}
+.meeting-alert button:focus-visible,
+.meeting-alert a:focus-visible {
+  outline: 2px solid var(--m-accent);
+  outline-offset: 4px;
+  border-radius: 3px;
+}
+.meeting-alert button:active,
+.meeting-alert a:active {
+  transform: scale(0.98);
+}
+.calendar-reminder-time {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+@media (max-width: 700px) {
+  .meeting-alert {
+    right: 16px;
+    bottom: 16px;
+  }
+  .meeting-alert-dismiss {
+    width: 44px;
+    height: 44px;
+  }
+}

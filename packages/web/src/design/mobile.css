@@ -1,0 +1,722 @@
+/* ————————————————————————————————————————————————————————————————
+   Phone. One column, sized for a thumb: the rail becomes a drawer,
+   rows stack into cards, the thread takes the whole screen, and the
+   keyboard's vocabulary (caps, hints) gives way to buttons. The
+   breakpoint matches lib/narrow.ts.
+   ———————————————————————————————————————————————————————————————— */
+
+.mobile-only {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  :root {
+    --row-h: 80px;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .mobile-only {
+    display: inline-flex;
+  }
+
+  /* iOS zooms into any field under 16px when it takes focus. */
+  input,
+  textarea,
+  select,
+  [contenteditable] {
+    font-size: 16px !important;
+  }
+
+  /* ———— the rail as a drawer ———— */
+
+  .rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 60;
+    width: min(300px, 84vw);
+    padding: calc(14px + var(--safe-top)) 12px calc(14px + var(--safe-bottom));
+    box-shadow: var(--m-shadow-high);
+    transform: translateX(-104%);
+    visibility: hidden;
+    transition:
+      transform 260ms cubic-bezier(0.32, 0.72, 0, 1),
+      visibility 0s linear 260ms;
+  }
+
+  .is-nav-open .rail {
+    transform: none;
+    visibility: visible;
+    transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .nav-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 59;
+    background: color-mix(in srgb, var(--m-ink) 28%, transparent);
+    animation: scrim-in 200ms ease-out;
+  }
+
+  @keyframes scrim-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  .rail-item {
+    min-height: 42px;
+    font-size: 15px;
+  }
+
+  /* Keys have no meaning under a thumb. */
+  .rail-item-keys,
+  .rail-search-key,
+  .rail-hint .keycaps,
+  .rail-hint > .hint-pair:first-child {
+    display: none;
+  }
+
+  .rail-hint {
+    font-size: 14px;
+  }
+
+  .rail-hint-link {
+    padding: 8px 0;
+    color: var(--m-ink-muted);
+  }
+
+  /* ———— headers ———— */
+
+  .nav-btn {
+    position: relative;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin: -8px 0 -8px -10px;
+    border-radius: 50%;
+    color: var(--m-ink);
+    align-self: center;
+  }
+
+  .nav-btn svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .nav-btn:active {
+    background: var(--m-bg-hover);
+  }
+
+  .nav-btn-search {
+    margin: -8px -10px -8px 0;
+  }
+
+  .nav-btn-dot {
+    position: absolute;
+    top: 9px;
+    right: 8px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--m-accent);
+    box-shadow: 0 0 0 2px var(--m-bg);
+  }
+
+  .list-head {
+    align-items: center;
+    gap: 8px;
+    padding: calc(14px + var(--safe-top)) 16px 10px;
+    border-bottom: 1px solid var(--m-rule);
+  }
+
+  .list-title {
+    font-size: 26px;
+    line-height: 1.1;
+  }
+
+  .list-count {
+    color: var(--m-accent);
+    margin-right: auto;
+  }
+
+  .calendar-header {
+    padding-top: calc(16px + var(--safe-top)) !important;
+  }
+
+  .calendar-header > .nav-btn {
+    float: left;
+    margin: -3px 6px 0 -10px;
+  }
+
+  .calendar-header .calendar-eyebrow {
+    display: none;
+  }
+
+  /* ———— rows as cards ———— */
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-rows: auto auto auto;
+    align-content: center;
+    column-gap: 6px;
+    row-gap: 1px;
+    height: 100%;
+    padding: 0 16px 0 28px;
+    border-bottom: 1px solid var(--m-rule);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .row:hover {
+    background: none;
+  }
+
+  .row:active {
+    background: var(--m-bg-hover);
+  }
+
+  /* The keyboard cursor means nothing here; tapping opens. */
+  .row.is-focused:not(.is-selected) {
+    background: none;
+    box-shadow: none;
+  }
+
+  .row-mark {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+  }
+
+  .row.is-focused:not(.is-selected) .row-mark {
+    background: none;
+  }
+
+  .row-text {
+    display: contents;
+  }
+
+  .row-from {
+    grid-area: 1 / 1;
+    width: auto;
+    font-size: 15px;
+    position: static;
+  }
+
+  .row.is-unread .row-from {
+    padding-left: 0;
+  }
+
+  /* The unread dot moves into the gutter, level with the sender. */
+  .row.is-unread .row-from::before {
+    left: 11px;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    transform: translateY(-26px);
+  }
+
+  .row-star {
+    grid-area: 1 / 2;
+    width: auto;
+    font-size: 14px;
+    opacity: 1;
+  }
+
+  .row-star:not(.is-on) {
+    display: none;
+  }
+
+  .row-date {
+    grid-area: 1 / 3;
+    width: auto;
+    font-size: 11.5px;
+  }
+
+  .row-subject {
+    grid-area: 2 / 1 / 3 / 4;
+    font-size: 15px;
+    color: var(--m-ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row:not(.is-unread) .row-subject {
+    color: var(--m-ink-muted);
+  }
+
+  .row-snippet {
+    display: block;
+    grid-area: 3 / 1;
+    font-size: 13.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row-snippet::before {
+    content: none;
+  }
+
+  .row-meta {
+    grid-area: 3 / 2 / 4 / 4;
+    gap: 6px;
+    min-width: 0;
+    max-width: 46vw;
+    overflow: hidden;
+  }
+
+  /* The backdrop a swiped row slides over: the action's colour and name,
+     brightening once letting go would act. */
+  [data-swipe] {
+    display: flex;
+    align-items: center;
+    background: var(--m-bg-sunken);
+    color: var(--m-ink-muted);
+    font-weight: 600;
+    font-size: 14px;
+    transition: background 120ms ease-out, color 120ms ease-out;
+  }
+
+  [data-swipe]::before {
+    content: attr(data-label);
+    padding: 0 22px;
+  }
+
+  [data-swipe="left"] {
+    justify-content: flex-end;
+  }
+
+  [data-swipe] > .row.row {
+    position: absolute;
+    inset: 0;
+    background: var(--m-bg);
+  }
+
+  [data-swipe="left"][data-armed] {
+    background: var(--m-accent);
+    color: var(--m-accent-ink);
+  }
+
+  [data-swipe="right"][data-armed] {
+    background: hsl(212 45% 42%);
+    color: #fff;
+  }
+
+  /* One chip, the finest one (reminder, then topic, then lane). */
+  .row-meta > * {
+    flex-shrink: 0;
+  }
+
+  .row-meta .row-chip {
+    max-width: 40vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .row-meta .row-chip ~ .row-chip {
+    display: none;
+  }
+
+  .row-acct-dot {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(4px);
+  }
+
+  /* ———— sweep ———— */
+
+  .sweep-scroll {
+    padding: 12px 12px calc(96px + var(--safe-bottom));
+  }
+
+  .sweep-card {
+    gap: 12px;
+    padding: 14px 12px 14px 14px;
+  }
+
+  .sweep-card-archive {
+    opacity: 1;
+    padding: 9px 14px;
+    font-size: 13px;
+  }
+
+  .sweep-card-archive:active {
+    background: var(--m-bg-hover);
+  }
+
+  .sweep-foot {
+    display: none;
+  }
+
+  /* ———— compose button ———— */
+
+  .compose-fab {
+    position: fixed;
+    right: 18px;
+    bottom: calc(22px + var(--safe-bottom));
+    z-index: 20;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--m-accent);
+    color: var(--m-accent-ink);
+    box-shadow:
+      0 2px 6px color-mix(in srgb, var(--m-accent) 30%, transparent),
+      0 10px 28px color-mix(in srgb, var(--m-accent) 32%, transparent);
+    transition: transform 160ms cubic-bezier(0.3, 0.9, 0.3, 1.3);
+    animation: fab-in 320ms cubic-bezier(0.3, 0.9, 0.3, 1.2) both;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .compose-fab svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .compose-fab:active {
+    transform: scale(0.92);
+  }
+
+  @keyframes fab-in {
+    from {
+      opacity: 0;
+      transform: scale(0.6);
+    }
+  }
+
+  .list-scroll {
+    padding-bottom: calc(96px + var(--safe-bottom));
+  }
+
+  /* A reminder that a meeting is on sits above the compose button. */
+  .meeting-alert {
+    left: 12px;
+    right: 12px;
+    bottom: calc(90px + var(--safe-bottom));
+    width: auto;
+  }
+
+  /* ———— thread ———— */
+
+  /* A toolbar first (back, then the thread's verbs at the right edge), then
+     the subject at full width with its count, then the topic chip. */
+  .thread-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 10px;
+    padding: calc(6px + var(--safe-top)) 10px 12px 6px;
+  }
+
+  .thread-back {
+    grid-area: 1 / 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    font-size: 22px;
+  }
+
+  .thread-actions {
+    grid-area: 1 / 2;
+    gap: 2px;
+  }
+
+  .thread-head .thread-subject {
+    grid-area: 2 / 1 / 3 / 3;
+    padding-left: 10px;
+    font-size: 21px;
+    -webkit-line-clamp: 3;
+  }
+
+  /* The star lives in the action row. */
+  .thread-star {
+    display: none;
+  }
+
+  .thread-msgcount {
+    grid-area: 3 / 2;
+    justify-self: end;
+    margin-right: 4px;
+  }
+
+  .thread-head .row-topic {
+    grid-area: 3 / 1;
+    justify-self: start;
+    margin-left: 10px;
+  }
+
+  .thread-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 38px;
+    border-radius: 10px;
+    color: var(--m-ink-muted);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .thread-action svg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .thread-action:active {
+    background: var(--m-bg-hover);
+    color: var(--m-ink);
+  }
+
+  .thread-action.is-on {
+    color: var(--m-star);
+  }
+
+  /* The messages fill the screen, so the reply bar rests at its foot even
+     under a short thread. */
+  .thread-scroll {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .thread-messages {
+    flex: 1 0 auto;
+    width: 100%;
+    padding: 4px 14px calc(20px + var(--safe-bottom));
+  }
+
+  /* The body takes the full width; the avatar gutter is a desktop luxury. */
+  .msg-body,
+  .msg-attachments {
+    padding-left: 0;
+  }
+
+  .msg-collapsed {
+    min-height: 48px;
+  }
+
+  /* The hint strip becomes the reply bar: pill buttons at the foot of the
+     screen, the verbs without their keys. */
+  .thread-replybar {
+    position: sticky;
+    bottom: 0;
+    margin: auto -14px calc(-20px - var(--safe-bottom));
+    padding: 10px 14px calc(12px + var(--safe-bottom));
+    background: color-mix(in srgb, var(--m-bg) 92%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+
+  .thread-replybar-hint {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .thread-replybar-hint .hint-pair.is-button {
+    margin: 0;
+    padding: 10px 16px;
+    border: 1px solid var(--m-rule-strong);
+    border-radius: 999px;
+    background: var(--m-bg-raised);
+    color: var(--m-ink);
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .thread-replybar-hint .hint-pair.is-button:first-child {
+    flex: 1;
+    justify-content: center;
+    min-width: 110px;
+  }
+
+  .thread-replybar-hint .hint-pair.is-button:active {
+    background: var(--m-bg-hover);
+  }
+
+  /* ———— compose as a sheet ———— */
+
+  .compose:not(.compose-inline) {
+    inset: 0;
+    width: auto;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bottom);
+    z-index: 70;
+  }
+
+  /* Send rides in the header, where the keyboard can never cover it. */
+  .compose:not(.compose-inline) .compose-head {
+    min-height: 52px;
+    padding: 0 6px 0 16px;
+  }
+
+  .compose:not(.compose-inline) .compose-foot {
+    position: absolute;
+    top: var(--safe-top);
+    right: 88px;
+    height: 52px;
+    flex-direction: row-reverse;
+    gap: 4px;
+    padding: 0;
+    border-top: 0;
+  }
+
+  .compose:not(.compose-inline) .compose-send {
+    padding: 7px 16px;
+  }
+
+  .compose-head-actions button {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+
+  .compose .keycaps,
+  .compose-inline-edit {
+    display: none;
+  }
+
+  .compose-inline {
+    margin-inline: 0;
+  }
+
+  /* A parked draft waits at the left, clear of the compose button. */
+  .compose-pill {
+    left: 16px;
+    right: auto;
+    bottom: calc(30px + var(--safe-bottom));
+    max-width: calc(100vw - 110px);
+  }
+
+  /* Toasts take the top of the screen, clear of the thumb's controls and
+     of a meeting reminder. */
+  .toasts {
+    top: calc(12px + var(--safe-top));
+    bottom: auto;
+    width: calc(100vw - 24px);
+  }
+
+  .toast {
+    font-size: 14px;
+    padding: 11px 18px;
+  }
+
+  .toast-action .keycaps {
+    display: none;
+  }
+
+  .toast-action {
+    font-weight: 600;
+    color: var(--m-accent-ink);
+    opacity: 1;
+  }
+
+  .compose-foot-hint,
+  .searchbar-hint > :first-child {
+    display: none;
+  }
+
+  /* The keyboard's search key runs the search; close stays as Cancel. */
+  .searchbar-hint .hint-pair.is-button {
+    margin: -6px -8px -6px 0;
+    padding: 6px 8px;
+    font-size: 15px;
+    color: var(--m-accent);
+  }
+
+  .compose-send {
+    padding: 10px 20px;
+    font-size: 15px;
+  }
+
+  .searchbar {
+    margin: calc(10px + var(--safe-top)) 12px 0;
+  }
+
+  .searchbar + .list .list-head {
+    padding-top: 12px;
+  }
+
+  /* The browser's own clear button duplicates Cancel. */
+  .searchbar-input::-webkit-search-cancel-button {
+    display: none;
+  }
+
+  /* ———— overlays as sheets ———— */
+
+  /* Every overlay rises from the bottom and leaves a strip of the app above
+     it: a tap there closes it, as it does everywhere. */
+  .overlay {
+    align-items: flex-end;
+    padding-top: calc(48px + var(--safe-top));
+  }
+
+  .overlay > .palette,
+  .overlay > .help {
+    width: 100%;
+    max-height: 100%;
+    border-bottom: 0;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: var(--safe-bottom);
+    animation: sheet-up 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .overlay > .palette {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .overlay > .help {
+    padding: 20px 18px calc(24px + var(--safe-bottom));
+  }
+
+  .palette-list {
+    max-height: none;
+    padding: 6px 8px 10px;
+  }
+
+  .palette-item {
+    min-height: 48px;
+    font-size: 15px;
+  }
+
+  @keyframes sheet-up {
+    from {
+      transform: translateY(100%);
+    }
+  }
+
+  .help-sub {
+    display: none;
+  }
+
+  .help-head {
+    align-items: center;
+    margin-bottom: 14px;
+  }
+
+  .settings-btn {
+    padding: 9px 14px;
+    font-size: 14px;
+  }
+
+  /* ———— touch ———— */
+
+  /* Hover affordances that would stick after a tap. */
+  .hint-pair.is-button .keycaps {
+    display: none;
+  }
+}

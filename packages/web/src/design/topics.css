@@ -1,0 +1,571 @@
+/* ————————————————————————————————————————————————————————————————
+   Topics: the grouped inbox's rows, a topic page's header, the editor
+   behind Rename, the grouping progress line, the row chip, and the
+   move-to-topic picker. Small shared pieces (an inline error, an eyebrow,
+   a confirm line) are here too; the filters panel borrows them.
+   ———————————————————————————————————————————————————————————————— */
+
+.topic-actions,
+.topic-merge,
+.topic-head-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.topic-actions {
+  margin-top: 12px;
+}
+
+.topic-merge {
+  gap: 6px;
+}
+
+.topic-editor select {
+  font: inherit;
+  font-size: 13px;
+  color: inherit;
+  background: var(--m-bg-raised);
+  border: 1px solid var(--m-rule);
+  border-radius: 5px;
+  padding: 5px 8px;
+  max-width: 100%;
+}
+
+.topic-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--m-ink-muted);
+}
+
+.topic-error {
+  color: var(--m-danger);
+  padding: 12px 26px;
+  overflow-wrap: anywhere;
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.topic-error.is-inline {
+  padding: 8px 0 0;
+  width: auto;
+  max-width: none;
+  font-size: 12px;
+}
+
+/* An inline question with its two answers, level with the buttons beside it. */
+.topic-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--m-ink-muted);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.sel-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.rail-topic-acct {
+  margin-right: 2px;
+}
+
+/* ———— grouping progress ———— */
+
+.topic-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 0 2px;
+}
+
+.topic-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topic-progress-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--m-ink-muted);
+}
+
+.topic-progress-bar {
+  position: relative;
+  width: 120px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--m-bg-sunken);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.topic-progress-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--m-accent);
+  transition: width 600ms ease;
+}
+
+.topic-progress-bar > span.is-indeterminate {
+  width: 30% !important;
+  animation: topic-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes topic-sweep {
+  0% { left: -30%; }
+  100% { left: 100%; }
+}
+
+/* ———— editor ———— */
+
+.topic-editor {
+  padding: 18px;
+  border: 1px solid var(--m-rule);
+  border-radius: var(--radius-lg);
+  background: var(--m-bg-raised);
+}
+
+.topic-editor label {
+  display: grid;
+  gap: 7px;
+  color: var(--m-ink-muted);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+.topic-editor .topic-field-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 12px;
+}
+
+.topic-editor input,
+.topic-editor textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;
+  border: 1px solid var(--m-rule);
+  border-radius: 6px;
+  padding: 10px;
+  font: inherit;
+  color: var(--m-ink);
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.topic-editor input:focus,
+.topic-editor textarea:focus {
+  outline: none;
+  border-color: var(--m-accent);
+}
+
+.topic-editor textarea {
+  min-height: 64px;
+}
+
+/* ———— topic page header ———— */
+
+.topic-head {
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  box-sizing: border-box;
+  padding: 0 26px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.topic-head-row {
+  gap: 12px;
+}
+
+.topic-back,
+.topic-crumb {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--m-ink-muted);
+  background: none;
+  border: 0;
+  padding: 4px 8px;
+  margin-left: -8px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.topic-back:hover,
+.topic-crumb:hover {
+  background: var(--m-bg-hover);
+  color: var(--m-ink);
+}
+
+.topic-crumb {
+  margin-left: 0;
+  color: hsl(var(--hue) var(--lane-s) calc(var(--lane-l) - 8%));
+}
+
+:root[data-theme="dark"] .topic-crumb {
+  color: hsl(var(--hue) var(--lane-s) var(--lane-l));
+}
+
+.topic-head-desc {
+  flex: 1;
+  min-width: 240px;
+  font-size: 13px;
+  color: var(--m-ink-muted);
+  line-height: 1.5;
+  display: grid;
+  gap: 2px;
+  border-left: 3px solid hsl(var(--hue) var(--lane-s) var(--lane-l));
+  padding-left: 12px;
+}
+
+.topic-head-gist {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.topic-head-desc em {
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--m-ink-faint);
+}
+
+.topic-edit {
+  margin-left: auto;
+}
+
+/* ———— row chip ———— */
+
+.row-topic {
+  background: color-mix(in srgb, hsl(var(--hue) var(--lane-s) var(--lane-l)) 12%, transparent);
+  color: hsl(var(--hue) var(--lane-s) calc(var(--lane-l) - 8%));
+  border: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.3;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thread-head .row-topic {
+  font-size: 11px;
+  max-width: 260px;
+  flex-shrink: 0;
+}
+
+.row-topic:hover {
+  background: color-mix(in srgb, hsl(var(--hue) var(--lane-s) var(--lane-l)) 24%, transparent);
+}
+
+:root[data-theme="dark"] .row-topic {
+  color: hsl(var(--hue) var(--lane-s) var(--lane-l));
+}
+
+/* ———— the grouped inbox ———— */
+
+.list-grouping {
+  margin-left: auto;
+  align-self: center;
+}
+
+.topic-segments {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--m-rule);
+  border-radius: 7px;
+}
+
+.topic-segments button {
+  padding: 3px 9px;
+  background: none;
+  border: 0;
+  color: var(--m-ink-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.topic-segments button[aria-pressed="true"] {
+  background: var(--m-bg-hover);
+  color: var(--m-ink);
+  border-radius: 4px;
+}
+
+.topic-segments button:disabled {
+  color: var(--m-ink-faint);
+  cursor: default;
+}
+
+/* The inbox as topics: one section per topic, one level. A section is
+   its head, its newest few conversations, and a "N more" line when it
+   runs past the peek. The head is set in the reading face so it reads as
+   a heading and not as a row; the hue is spent on the head's mark and the
+   guide line down the section's conversations. Nothing folds. */
+.section-row {
+  color: var(--m-ink);
+  cursor: pointer;
+  height: 52px;
+  padding-top: 10px;
+  align-items: flex-end;
+  padding-bottom: 6px;
+}
+
+.section-row .row-mark {
+  background: hsl(var(--hue) var(--lane-s) var(--lane-l));
+  align-self: auto;
+  height: 18px;
+}
+
+.section-row.is-loose .row-mark {
+  background: var(--m-rule-strong);
+}
+
+.section-row.is-focused .row-mark {
+  background: hsl(var(--hue) var(--lane-s) var(--lane-l));
+}
+
+.section-row.is-loose.is-focused .row-mark {
+  background: var(--m-accent);
+}
+
+.section-name {
+  font-family: var(--font-read);
+  font-size: 17px;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  padding-left: 6px;
+}
+
+.section-row.is-loose .section-name {
+  color: var(--m-ink-muted);
+}
+
+.section-count {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--m-ink-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding-bottom: 2px;
+}
+
+.section-row.is-unread .section-count {
+  color: var(--m-ink-muted);
+}
+
+/* Right-click on a topic: one verb, hide or unhide. Instant, from the
+   pointer, so it reads as a menu and not as a dialog. */
+.topic-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 148px;
+  padding: 4px;
+  background: var(--m-bg-raised);
+  border: 1px solid var(--m-rule);
+  border-radius: 8px;
+  box-shadow: var(--m-shadow-high);
+}
+
+.topic-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--m-ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topic-menu button:hover,
+.topic-menu button:focus {
+  background: var(--m-bg-hover);
+  outline: none;
+}
+
+.topic-menu button:active {
+  transform: scale(0.97);
+}
+
+/* A conversation in a section: a guide line in the section's hue down
+   its left, in the column the head's mark sits in. */
+.row.in-section::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 14px;
+  width: 3px;
+  border-radius: 2px;
+  background: hsl(var(--hue) var(--lane-s) var(--lane-l));
+  opacity: 0.25;
+}
+
+.row.in-section .row-mark {
+  position: relative;
+}
+
+/* "N more in Sentry Alerts": one quiet line closing the section. */
+.section-more {
+  display: block;
+  width: 100%;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 26px 0 37px;
+  text-align: left;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--m-ink-muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  position: relative;
+}
+
+.section-more::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 12px;
+  left: 14px;
+  width: 3px;
+  border-radius: 0 0 2px 2px;
+  background: hsl(var(--hue) var(--lane-s) var(--lane-l));
+  opacity: 0.25;
+}
+
+.section-more:hover {
+  color: var(--m-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* The hidden footer: the names, each a way to its page. Right-click
+   unhides. */
+.section-muted {
+  display: flex;
+  align-items: center;
+  gap: 4px 10px;
+  flex-wrap: wrap;
+  height: 32px;
+  padding: 0 26px 0 17px;
+  margin-top: 8px;
+  border-top: 1px solid var(--m-rule);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--m-ink-faint);
+}
+
+.section-muted-link {
+  font: inherit;
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  color: var(--m-ink-muted);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.section-muted-link:hover {
+  color: var(--m-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 600px) {
+  .topic-head,
+  .topic-error {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+
+/* ———— move-to-topic picker ———— */
+
+.palette-item .picker-hint {
+  margin-left: 10px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--m-ink-faint);
+}
+
+.picker-keys {
+  display: inline-flex;
+  gap: 12px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.picker-foot {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.picker-count {
+  margin-left: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--m-ink-faint);
+  padding-left: 12px;
+}
+
+.picker-current {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--m-accent);
+  margin-left: 8px;
+}
+
+.palette-item.is-current .palette-item-title {
+  color: var(--m-accent);
+}

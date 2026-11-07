@@ -1,0 +1,24 @@
+{
+  "name": "mail",
+  "private": true,
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "./dev.sh",
+    "postinstall": "bash packages/convex/node_modules/@platform/auth/patches/convex-auth-iss-fix.sh",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun run --filter '*' test"
+  },
+  "packageManager": "bun@1.3.14",
+  "trustedDependencies": [
+    "electron"
+  ],
+  "overrides": {
+    "@auth/core": "0.41.3",
+    "@convex-dev/auth": "0.0.95"
+  }
+}

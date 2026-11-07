@@ -1,0 +1,4 @@
+# Cloudflare Pages rewrites. 404.html turns the single page fallback off (see
+# its comment), so each app path served by index.html is named here.
+# /connect: another app (codecast) asks to connect (src/sync/appConnect.ts).
+/connect / 200

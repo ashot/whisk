@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- Its presence turns off Cloudflare Pages' single-page fallback, so a missing
+     path answers 404 (no-store) instead of index.html. That matters for
+     /assets/*: the fallback came back as 200 text/html under the year-long
+     immutable header, and a browser that asked for a new asset a moment
+     before the edge had it kept an unstyled app until the next deploy. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not found · Whisk</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f3ec; color: #6b6355; font: 15px/1.5 Georgia, serif; }
+  @media (prefers-color-scheme: dark) { body { background: #161310; color: #a49a8a; } a { color: #ef5a24; } }
+  a { color: #c93a0e; }
+</style>
+</head>
+<body><p>Nothing lives here. <a href="/">Back to Whisk</a></p></body>
+</html>

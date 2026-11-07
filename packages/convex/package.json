@@ -1,0 +1,28 @@
+{
+  "name": "@mail/convex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "convex/_generated/api.js",
+  "scripts": {
+    "dev": "convex dev",
+    "typecheck": "tsc --noEmit -p convex/tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.120.0",
+    "@auth/core": "^0.41.3",
+    "@convex-dev/auth": "0.0.95",
+    "@mail/shared": "workspace:*",
+    "@platform/auth": "file:../../platform/packages/auth",
+    "@platform/crypto": "file:../../platform/packages/crypto",
+    "@platform/engine-convex": "file:../../platform/packages/engine-convex",
+    "@platform/push": "file:../../platform/packages/push",
+    "convex": "^1.31.6",
+    "jose": "5.10.0"
+  },
+  "devDependencies": {
+    "convex-test": "^0.0.38",
+    "typescript": "^5.7.2"
+  }
+}

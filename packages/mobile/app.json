@@ -1,0 +1,68 @@
+{
+  "expo": {
+    "name": "Whisk",
+    "slug": "terse-mail",
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "version": "1.1.0",
+    "runtimeVersion": "1.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "tersemail",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "owner": "ashotp",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f6f3ec"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ashotp.tersemail",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": [
+          "remote-notification"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#f6f3ec"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "com.ashotp.tersemail"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-updates",
+      "expo-secure-store",
+      "expo-sqlite",
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#c93a0e"
+        }
+      ]
+    ],
+    "updates": {
+      "url": "https://u.expo.dev/60a9bab4-8d28-4e66-9db3-6ee17ef4d565"
+    },
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "60a9bab4-8d28-4e66-9db3-6ee17ef4d565"
+      }
+    }
+  }
+}

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover hands the notch and home bar to the app, which pads
+         itself with the safe-area insets (design/mobile.css). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- The browser chrome takes the page colour: set from the family sheet at
+         the top of <body>, and kept in step by lib/theme.ts. -->
+    <meta name="theme-color" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="Whisk" />
+    <meta
+      name="google-site-verification"
+      content="CI-huNxzkYEES3PbWWf7tMgyFWFDS0qAKst9IGn8OnU"
+    />
+    <title>Whisk: a better home for your Gmail</title>
+    <meta
+      name="description"
+      content="Whisk is an email client for Gmail with your calendar built in. It opens instantly, works offline, and keeps your mail in step across Mac, web and iPhone."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23c93a0e'/%3E%3Cpath d='M7 11.5 16 18l9-6.5M7.5 22.5h17a1.5 1.5 0 0 0 1.5-1.5V11a1.5 1.5 0 0 0-1.5-1.5h-17A1.5 1.5 0 0 0 6 11v10a1.5 1.5 0 0 0 1.5 1.5Z' fill='none' stroke='%23fdfbf6' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <script>
+      // Paint the right theme before first render — no flash.
+      try {
+        // Light is the default; dark only when explicitly chosen (⌘K → toggle theme).
+        var dark = localStorage.getItem("mail:theme") === "dark";
+        if (dark) document.documentElement.dataset.theme = "dark";
+        // Keep UA-rendered chrome (scrollbars, form controls) on the app theme.
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      } catch (e) {}
+      // Progressive enhancement: with JS on, the static landing below never
+      // paints — the app takes over. Without JS (and for crawlers), the
+      // landing is the page.
+      document.documentElement.className += " js";
+    </script>
+    <style>
+      html.js #static-landing {
+        display: none;
+      }
+      #static-landing {
+        font-family: Georgia, serif;
+        max-width: 620px;
+        margin: 0 auto;
+        padding: 72px 24px;
+        color: var(--pd-ink);
+        background: var(--pd-bg);
+        line-height: 1.6;
+      }
+      #static-landing h1 {
+        font-style: italic;
+        font-size: 44px;
+        margin: 0 0 12px;
+      }
+      #static-landing a {
+        color: var(--pd-accent);
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      // The family sheet (@platform/design, injected at the end of <head> by
+      // its vite plugin) is parsed by now, so the chrome can take the page's
+      // colour for the theme the script above chose.
+      try {
+        document.querySelector('meta[name="theme-color"]').content = getComputedStyle(document.documentElement)
+          .getPropertyValue("--pd-bg")
+          .trim();
+      } catch (e) {}
+    </script>
+    <div id="static-landing">
+      <h1>Whisk</h1>
+      <p>
+        Whisk is an email client for your Gmail with your calendar built in.
+        Read, search, write, and organize your mail: archive, label, star,
+        snooze, and send. Whisk runs as a Mac app, in any browser, and on
+        iPhone, and keeps them all in step.
+      </p>
+      <p>
+        <a href="https://dl.whisk.email/desktop/Whisk-arm64.dmg">Download Whisk for Mac</a>
+      </p>
+      <p>
+        Whisk syncs with Gmail on your behalf and keeps your mailbox on your
+        device, so the app renders instantly and works offline. Your mail is
+        used only to provide the client to you — never for advertising, never
+        sold, never used to train AI models.
+      </p>
+      <p>
+        <a href="/privacy/">Privacy Policy</a> ·
+        <a href="/terms/">Terms of Service</a> ·
+        <a href="mailto:ashot@almostcandid.com">Contact</a>
+      </p>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Heal a poisoned asset cache. Before public/404.html, a deploy race
+      // could answer /assets/* with index.html under the year-long immutable
+      // header, and the browser kept an unstyled app until the hash changed.
+      // Look up each hashed asset in the HTTP cache; any stored as HTML is
+      // refetched past the cache, which overwrites it, then reload once.
+      addEventListener("load", function () {
+        if (!window.fetch || sessionStorage.getItem("whisk:healed")) return;
+        var urls = [].map.call(
+          document.querySelectorAll('link[href^="/assets/"], script[src^="/assets/"]'),
+          function (el) { return el.getAttribute("href") || el.getAttribute("src"); }
+        );
+        Promise.all(urls.map(function (url) {
+          return fetch(url, { cache: "only-if-cached", mode: "same-origin" })
+            .then(function (r) {
+              if (!/text\/html/.test(r.headers.get("content-type") || "")) return false;
+              return fetch(url, { cache: "reload" }).then(function () { return true; });
+            })
+            .catch(function () { return false; });
+        })).then(function (healed) {
+          if (healed.indexOf(true) < 0) return;
+          sessionStorage.setItem("whisk:healed", "1");
+          location.reload();
+        });
+      });
+    </script>
+  </body>
+</html>
