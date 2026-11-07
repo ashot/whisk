@@ -8,11 +8,15 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export const FAST_MODEL = "claude-haiku-4-5";
 export const SMART_MODEL = "claude-opus-5";
-/** Importance runs on every new email, so it must be cheap and quick, but
+/** Lens scoring runs on every new email, so it must be cheap and quick, but
  *  Haiku reads any machine mail that says "action required" as important
- *  (scripts/importance-eval.ts: 19% precision on Haiku 4.5, ~50% on Haiku
- *  5.5, 90-100% on Sonnet 5.5 at low effort, same recall). */
-export const IMPORTANCE_MODEL = "claude-sonnet-5-5";
+ *  (scripts/lens-eval.ts: 19% precision on Haiku 4.5, ~50% on Haiku 5.5,
+ *  90-100% on Sonnet 5.5 at low effort, same recall). */
+export const LENS_MODEL = "claude-sonnet-5-5";
+/** The privacy judge reads every thread with new mail once rules exist, and
+ *  a miss shows private mail to an agent, so it needs Sonnet's care at
+ *  Haiku-like cost: low effort, small batches. */
+export const PRIVACY_MODEL = "claude-sonnet-5-5";
 
 let client: Anthropic | null = null;
 

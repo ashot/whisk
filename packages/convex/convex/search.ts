@@ -2,6 +2,8 @@ import { v } from "convex/values";
 import { action, internalQuery, query } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { requireAccount, requireAccounts } from "./lib/auth";
+import { mailReader } from "./lib/privacy";
+import { threadPrivacy } from "@mail/shared/src/lib/privacy";
 import { scopeNeedValidator } from "./lib/apps";
 import { actionAccounts } from "./lib/actionAuth";
 import { publicThread } from "./lib/rows";
@@ -43,9 +45,8 @@ export const searchThreads = query({
   handler: async (ctx, { token, q, limit, accountId }) => {
     // Scope: one account when the client is scoped, every session account in
     // the unified view.
-    const accounts = accountId
-      ? [await requireAccount(ctx, token, accountId, "mail.read")]
-      : await requireAccounts(ctx, token, "mail.read");
+    const reader = await mailReader(ctx, token, "mail.read", accountId);
+    const accounts = reader.accounts;
     const parsed = parseQuery(q);
     const take = limit ?? DEFAULT_LIMIT;
     if (isEmptyQuery(parsed)) return [];
@@ -78,6 +79,7 @@ export const searchThreads = query({
         ) {
           continue;
         }
+        if (!reader.sees(thread)) continue;
         if (!matchThread(thread, parsed, labelNameById)) continue;
         hits.push(publicThread(thread));
         if (++accountHits >= take) break;
@@ -137,13 +139,18 @@ export const knownThreadIds = internalQuery({
   },
 });
 
-/** The hit rows themselves, in the order asked. Search is the one path that
- *  surfaces threads older than the client's synced window, so the rows ride
- *  back with the result instead of relying on the thread stream. */
+/** The hit rows themselves, in the order asked, that the caller may see.
+ *  Search is the one path that surfaces threads older than the client's
+ *  synced window, so the rows ride back with the result instead of relying
+ *  on the thread stream. `pending` names hits a caller kept from private
+ *  mail is waiting on: imported just now and not yet read against the
+ *  person's privacy rules. */
 export const threadRows = internalQuery({
-  args: { accountId: v.id("accounts"), gmailIds: v.array(v.string()) },
-  handler: async (ctx, { accountId, gmailIds }) => {
+  args: { token: v.optional(v.string()), accountId: v.id("accounts"), gmailIds: v.array(v.string()) },
+  handler: async (ctx, { token, accountId, gmailIds }) => {
+    const reader = await mailReader(ctx, token, "mail.read", accountId);
     const rows: ReturnType<typeof publicThread>[] = [];
+    const pending: string[] = [];
     for (const gmailId of gmailIds) {
       const thread = await ctx.db
         .query("threads")
@@ -151,9 +158,11 @@ export const threadRows = internalQuery({
           q.eq("account_id", accountId).eq("gmail_id", gmailId),
         )
         .unique();
-      if (thread && !thread.deleted) rows.push(publicThread(thread));
+      if (!thread || thread.deleted) continue;
+      if (reader.sees(thread)) rows.push(publicThread(thread));
+      else if (threadPrivacy(thread, reader.rules) === "pending") pending.push(gmailId);
     }
-    return rows;
+    return { rows, pending };
   },
 });
 
@@ -250,12 +259,17 @@ export const runFullSearch = action({
       }
       // The first page has no token; "" asks for it again.
       if (throttled) next[account._id] = pageTokens[account._id] ?? "";
-      rows.push(
-        ...(await ctx.runQuery(internal.search.threadRows, {
+      let hits = await ctx.runQuery(internal.search.threadRows, { token, accountId: account._id, gmailIds: ids });
+      if (hits.pending.length > 0) {
+        // A caller kept from private mail sees older mail once the model has
+        // read it against the person's rules; read it now, then answer.
+        await ctx.runAction(internal.ai.privacy.judgePrivacy, {
           accountId: account._id,
-          gmailIds: ids,
-        })),
-      );
+          threadGmailIds: hits.pending,
+        });
+        hits = await ctx.runQuery(internal.search.threadRows, { token, accountId: account._id, gmailIds: ids });
+      }
+      rows.push(...hits.rows);
     }
     return {
       rows,

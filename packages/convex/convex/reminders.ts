@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation, query } from "./_generated/server";
-import { requireAccounts } from "./lib/auth";
+import { mailReader, seesId } from "./lib/privacy";
 import { SYSTEM_LABEL_IDS, applyLabelsToThread, threadByGmailId } from "./lib/threads";
 import { enqueueOutbound, schedulePump } from "./lib/outbound";
 
@@ -11,9 +11,9 @@ import { enqueueOutbound, schedulePump } from "./lib/outbound";
 export const listReminders = query({
   args: { token: v.optional(v.string()), since: v.optional(v.number()) },
   handler: async (ctx, { token, since }) => {
-    const accounts = await requireAccounts(ctx, token, "mail.read");
+    const reader = await mailReader(ctx, token);
     const out = [];
-    for (const account of accounts) {
+    for (const account of reader.accounts) {
       const rows = await ctx.db
         .query("reminders")
         .withIndex("by_account", (q) =>
@@ -22,7 +22,9 @@ export const listReminders = query({
             : q.eq("account_id", account._id).gt("updated_at", since),
         )
         .collect();
-      out.push(...rows);
+      for (const row of rows) {
+        if (await seesId(ctx, reader, account._id, row.thread_gmail_id)) out.push(row);
+      }
     }
     return out;
   },

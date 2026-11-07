@@ -15,7 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@mail/convex/convex/_generated/api";
 import { mailStore } from "@mail/shared/src/store/mailStore";
 import { openThreadScreen } from "../lib/openThread";
-import { inScope, viewTitle } from "@mail/shared/src/store/selectors";
+import { inScope, inboxLenses, isInboxList, lensView, viewTitle } from "@mail/shared/src/store/selectors";
 import type { Draft, Thread, ViewId } from "@mail/shared/src/store/types";
 import { relativeDate } from "@mail/shared/src/lib/format";
 import { useCoarseNow } from "@mail/platform";
@@ -27,9 +27,9 @@ import { AccountButton } from "../components/AccountMenu";
 import { ThreadRow } from "../components/ThreadRow";
 import { Welcome } from "../components/Welcome";
 
-const VIEWS: Array<{ id: ViewId; name: string }> = [
-  { id: "inbox", name: "Important" },
-  { id: "other", name: "Other" },
+// The inbox lists (Important, the person's views, Other) lead; the
+// mailbox's own places follow.
+const PLACES: Array<{ id: ViewId; name: string }> = [
   { id: "starred", name: "Starred" },
   { id: "drafts", name: "Drafts" },
   { id: "sent", name: "Sent" },
@@ -41,6 +41,7 @@ const VIEWS: Array<{ id: ViewId; name: string }> = [
 const EMPTY_LINES: Record<string, [string, string]> = {
   inbox: ["Nothing important.", "The rest is under Other."],
   other: ["Nothing else.", "Everything in the inbox is marked important."],
+  lens: ["Nothing in this view.", "Widen it from the inbox on the web."],
   starred: ["No stars.", "Swipe a conversation to keep it close."],
   sent: ["Nothing sent yet.", "Write your first below."],
   archive: ["Archive is empty.", "Swipe right to file things away."],
@@ -137,6 +138,12 @@ export default function InboxScreen(): React.ReactElement {
     return <Welcome />;
   }
 
+  const lenses = inboxLenses(s);
+  const views: Array<{ id: ViewId; name: string }> = [
+    ...lenses.map((l) => ({ id: lensView(l.id), name: l.name })),
+    { id: "other", name: "Other" },
+    ...PLACES,
+  ];
   const setView = (v: ViewId) => mailStore.getState().setView(v);
   const st = () => mailStore.getState();
 
@@ -144,8 +151,8 @@ export default function InboxScreen(): React.ReactElement {
     <SafeAreaView style={[styles.safe, { backgroundColor: t.bg }]} edges={["top"]}>
       <View style={styles.header}>
         <Text style={[styles.brand, { color: t.ink }]}>
-          {viewTitle(view)}
-          {(view === "inbox" || view === "other") && unread > 0 && (
+          {views.find((v) => v.id === view)?.name ?? viewTitle(view)}
+          {isInboxList(view) && unread > 0 && (
             <Text style={[styles.unread, { color: t.accent }]}>  {unread}</Text>
           )}
         </Text>
@@ -159,7 +166,7 @@ export default function InboxScreen(): React.ReactElement {
 
       <View style={[styles.chipsRow, { borderBottomColor: t.rule }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
-          {VIEWS.map((v) => {
+          {views.map((v) => {
             const active = view === v.id;
             return (
               <Pressable
@@ -259,7 +266,7 @@ export default function InboxScreen(): React.ReactElement {
 
 function EmptyState({ view }: { view: string }): React.ReactElement {
   const { t } = useTheme();
-  const [title, sub] = EMPTY_LINES[view] ?? ["Nothing here.", ""];
+  const [title, sub] = EMPTY_LINES[view.startsWith("lens:") ? "lens" : view] ?? ["Nothing here.", ""];
   return (
     <View style={styles.empty}>
       <Text style={[styles.emptyTitle, { color: t.ink }]}>{title}</Text>

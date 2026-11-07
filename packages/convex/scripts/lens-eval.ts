@@ -1,30 +1,25 @@
-// Offline eval for the importance judge. Runs the server's own prompt over
-// threads saved from the real mailbox and scores the verdicts.
+// Offline eval for the lens judge. Runs the server's own prompt over
+// threads saved from the real mailbox and scores Important against hand
+// labels at several cutoffs, so the slider's range is measured, not guessed.
 //
 //   mkdir -p /tmp/imp/threads
 //   whisk search "newer_than:10d -in:sent -in:drafts -in:spam -in:trash" -n 400 --json \
 //     | jq -r '.[].gmail_id' | xargs -P 8 -I{} sh -c 'whisk read {} --json > /tmp/imp/threads/{}.json'
-//   cast vault run anthropic -- bun packages/convex/scripts/importance-eval.ts /tmp/imp/threads \
-//     [--gold gold.json] [--policy policy.txt] [--model m] [--effort low] [--runs 3] [--out results.json]
+//   cast vault run anthropic -- bun packages/convex/scripts/lens-eval.ts /tmp/imp/threads --gold gold.json \
+//     [--policy policy.txt] [--lens "Name::description"]... [--model m] [--effort low] [--runs 3] [--out results.json]
 //
 // Each thread is judged as it stood when its deciding message arrived: the
 // first inbound message the person later answered, else the newest inbound
-// one. Truth is a gold file ({gmail_id: true|false}, hand labels) when given,
-// else behavior: answered or starred = important, anything else = other.
-// Several runs show how much of a difference between policies is noise.
+// one. Truth is a gold file ({gmail_id: true|false}) when given, else
+// behavior: answered or starred = important. Extra --lens lists are scored
+// in the same call, the way the server does, and their top threads printed.
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { IMPORTANCE_MODEL, complete, parseJsonReply } from "../convex/ai/llm";
 import { readableBody } from "../convex/ai/mailText";
-import {
-  IMPORTANCE_BATCH,
-  IMPORTANCE_SYSTEM,
-  importanceInput,
-  parseImportanceVerdict,
-  type ImportanceRow,
-} from "../convex/ai/importance";
-import { DEFAULT_IMPORTANCE_POLICY } from "@mail/shared/src/lib/importance";
+import { LENS_BATCH, LENS_SYSTEM, lensInput, parseLensVerdict, type JudgedLens, type LensRow } from "../convex/ai/lenses";
+import { DEFAULT_IMPORTANCE_POLICY, IMPORTANT } from "@mail/shared/src/lib/lenses";
 
 type Msg = {
   from: { name?: string; email: string };
@@ -51,11 +46,16 @@ const policy = flag("policy") ? readFileSync(flag("policy")!, "utf8") : DEFAULT_
 const owner = flag("owner") ?? "ashot@almostcandid.com";
 const runs = Number(flag("runs") ?? 1);
 const effort = (flag("effort") ?? (flag("model") ? undefined : "low")) as "low" | "medium" | "high" | undefined;
+const extra: JudgedLens[] = argv.flatMap((a, i) => (a === "--lens" ? [argv[i + 1]] : [])).map((spec, i) => {
+  const [name, description] = spec.split("::");
+  return { id: `x${i}`, name, policy: description ?? name };
+});
+const lenses: JudgedLens[] = [{ id: IMPORTANT, name: "Important", policy }, ...extra];
 const gold: Record<string, boolean> | null = flag("gold") ? JSON.parse(readFileSync(flag("gold")!, "utf8")) : null;
 
 const mine = (m: Msg) => m.label_ids.includes("SENT");
 
-function snapshot(saved: Saved): { row: ImportanceRow; truth: boolean } | null {
+function snapshot(saved: Saved): { row: LensRow; truth: boolean } | null {
   const msgs = [...saved.messages].sort((a, b) => a.date - b.date);
   const inbound = msgs.filter((m) => !mine(m));
   if (inbound.length === 0) return null;
@@ -88,20 +88,20 @@ const cases = readdirSync(dir)
 
 async function judgeAll() {
   const batches: Array<typeof cases> = [];
-  for (let i = 0; i < cases.length; i += IMPORTANCE_BATCH) batches.push(cases.slice(i, i + IMPORTANCE_BATCH));
+  for (let i = 0; i < cases.length; i += LENS_BATCH) batches.push(cases.slice(i, i + LENS_BATCH));
   let failed = 0;
   const results = await Promise.all(
     batches.map(async (batch) => {
       const text = await complete({
         model,
-        system: IMPORTANCE_SYSTEM,
-        user: importanceInput({ owner, policy, corrections: [], rows: batch.map((c) => c.row) }),
-        maxTokens: 8000,
+        system: LENS_SYSTEM,
+        user: lensInput({ owner, lenses, corrections: [], rows: batch.map((c) => c.row) }),
+        maxTokens: 12000,
         effort,
       });
       try {
-        const verdicts = parseImportanceVerdict(parseJsonReply(text), batch.length);
-        return batch.map((c, i) => ({ ...c, ...verdicts[i] }));
+        const scores = parseLensVerdict(parseJsonReply(text), batch.length, lenses.map((l) => l.id));
+        return batch.map((c, i) => ({ ...c, scores: scores[i] }));
       } catch (error) {
         failed++;
         console.error(`batch failed: ${(error as Error).message}\n${text.slice(0, 400)}`);
@@ -115,20 +115,27 @@ async function judgeAll() {
 const started = Date.now();
 const all = await Promise.all(Array.from({ length: runs }, judgeAll));
 const pct = (a: number, b: number) => (b ? Math.round((100 * a) / b) : 0);
-const stats = all.map(({ results, failed }) => {
-  const tp = results.filter((r) => r.truth && r.important).length;
-  const shown = results.filter((r) => r.important).length;
-  const truths = results.filter((r) => r.truth).length;
-  return { n: results.length, failed, shown, recall: pct(tp, truths), precision: pct(tp, shown), truths };
-});
-console.log(`model ${model}${effort ? ` (${effort})` : ""} · ${cases.length} threads · ${runs} run(s) · ${((Date.now() - started) / 1000).toFixed(1)}s · truth: ${gold ? "gold labels" : "behavior"}`);
-for (const s of stats) console.log(`  shown ${String(s.shown).padStart(3)} of ${s.n}  recall ${s.recall}% of ${s.truths}  precision ${s.precision}%${s.failed ? `  (${s.failed} batches failed)` : ""}`);
+console.log(`model ${model}${effort ? ` (${effort})` : ""} · ${cases.length} threads · ${lenses.length} list(s) · ${runs} run(s) · ${((Date.now() - started) / 1000).toFixed(1)}s · truth: ${gold ? "gold labels" : "behavior"}`);
+for (const cutoff of [20, 30, 40, 50, 60, 70, 80]) {
+  const cells = all.map(({ results }) => {
+    const shown = results.filter((r) => r.scores[IMPORTANT].score >= cutoff);
+    const tp = shown.filter((r) => r.truth).length;
+    return `${String(shown.length).padStart(3)} shown ${String(pct(tp, results.filter((r) => r.truth).length)).padStart(3)}%R ${String(pct(tp, shown.length)).padStart(3)}%P`;
+  });
+  console.log(`  cutoff ${cutoff}: ${cells.join("  |  ")}`);
+}
+const failed = all.reduce((n, r) => n + r.failed, 0);
+if (failed) console.log(`  (${failed} batches failed)`);
 
 const { results } = all[0];
-const line = (r: (typeof results)[number]) => `  ${r.row.from.slice(0, 38).padEnd(38)}  ${r.row.subject.slice(0, 58).padEnd(58)}  ${r.why}`;
-console.log("\nmissed (truth important, judged other), run 1:");
-for (const r of results.filter((r) => r.truth && !r.important)) console.log(line(r));
-console.log("\nextra (truth other, judged important), run 1:");
-for (const r of results.filter((r) => !r.truth && r.important)) console.log(line(r));
+const line = (r: (typeof results)[number], id: string) => `  ${String(r.scores[id].score).padStart(3)}  ${r.row.from.slice(0, 34).padEnd(34)}  ${r.row.subject.slice(0, 54).padEnd(54)}  ${r.scores[id].why}`;
+console.log("\ngold important, by score (run 1):");
+for (const r of results.filter((r) => r.truth).sort((a, b) => b.scores[IMPORTANT].score - a.scores[IMPORTANT].score)) console.log(line(r, IMPORTANT));
+console.log("\nhighest-scoring gold other (run 1):");
+for (const r of results.filter((r) => !r.truth).sort((a, b) => b.scores[IMPORTANT].score - a.scores[IMPORTANT].score).slice(0, 12)) console.log(line(r, IMPORTANT));
+for (const l of extra) {
+  console.log(`\n${l.name}: top 15 (run 1)`);
+  for (const r of [...results].sort((a, b) => b.scores[l.id].score - a.scores[l.id].score).slice(0, 15)) console.log(line(r, l.id));
+}
 const out = flag("out");
 if (out) writeFileSync(out, JSON.stringify(results, null, 2));

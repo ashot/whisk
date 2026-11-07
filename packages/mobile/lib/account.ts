@@ -1,5 +1,5 @@
 import type { Account, Label, Thread } from "@mail/shared/src/store/types";
-import { orderedAccounts, visibleThreads } from "@mail/shared/src/store/selectors";
+import { inboxLenses, orderedAccounts, visibleThreads } from "@mail/shared/src/store/selectors";
 
 /** The account mail is presented "as" when one identity is needed (welcome
  *  gating, compose default): the first in stable order. */
@@ -13,7 +13,7 @@ export function allAccounts(s: any): Account[] {
 }
 
 export function visibleThreadsFor(s: any, view: string): Thread[] {
-  return visibleThreads(s.threads, view as any, s.searchHits, s.accountScope, s.reminders, s.labels);
+  return visibleThreads(s.threads, view as any, s.searchHits, s.accountScope, s.reminders, s.labels, inboxLenses(s));
 }
 
 /** Label chips for a thread. Label ids repeat across mailboxes, so a chip

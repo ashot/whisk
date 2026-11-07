@@ -2,6 +2,8 @@ import React, { useState } from "react";
 import { useTracked, useMailStore } from "../store/mailStore";
 import {
   inboxUnreadCount,
+  inboxLenses,
+  isInboxList,
   inScope,
   laneCounts,
   liveReminders,
@@ -198,7 +200,7 @@ export function Rail(): React.ReactElement {
     (s) => s.searchOpen,
     // The count itself, not the collection: the rail shows one number, so it
     // should wake for that number and not for every field on every thread.
-    (s) => inboxUnreadCount(s.threads, s.accountScope, s.clusters),
+    (s) => inboxUnreadCount(s.threads, s.accountScope, s.clusters, inboxLenses(s)),
     (s) => s.labels,
     (s) => s.drafts,
     (s) => s.accounts,
@@ -214,7 +216,7 @@ export function Rail(): React.ReactElement {
 
   const accounts = orderedAccounts(s.accounts) as Account[];
   const primary = accounts[0];
-  const inboxUnread = inboxUnreadCount(s.threads, s.accountScope, s.clusters);
+  const inboxUnread = inboxUnreadCount(s.threads, s.accountScope, s.clusters, inboxLenses(s));
   const draftCount = Object.values(s.drafts).filter((d) =>
     inScope(d, s.accountScope),
   ).length;
@@ -284,7 +286,7 @@ export function Rail(): React.ReactElement {
 
       <div className="rail-group">
         {primaryNav.map((item) => (
-          <RailItem key={item.view} item={item} active={s.activeView === item.view} />
+          <RailItem key={item.view} item={item} active={s.activeView === item.view || (item.view === "inbox" && isInboxList(s.activeView))} />
         ))}
       </div>
 

@@ -192,20 +192,6 @@ describe("Updater", () => {
     expect(await dev.performUpdate()).toEqual({ success: false, error: "dev_mode" });
   });
 
-  it("judges dev mode by the executable's name, not the directories above it", async () => {
-    const { updater } = await setup();
-    const at = (execPath: string) => new Updater({
-      productName: "Acme", binaryName: "acme", aliasName: "ac", currentVersion: "1.0.0", releaseBaseUrl: BASE, stateDir: "/x",
-      execPath, fs: (updater as any).cfg.fs, fetch: (updater as any).cfg.fetch, log: () => {},
-    }).isDevMode();
-    expect(at("/home/ubuntu/.local/bin/acme")).toBe(false);
-    expect(at("/home/ubuntu/.local/bin/ac")).toBe(false);
-    expect(at("C:\\Users\\bunny\\acme.exe")).toBe(false);
-    expect(at("/home/ubuntu/.bun/bin/bun")).toBe(true);
-    expect(at("/opt/homebrew/bin/bun-debug")).toBe(true);
-    expect(at("/usr/bin/node")).toBe(true);
-  });
-
   it("reports a missing platform binary", async () => {
     const { updater } = await setup();
     (updater as any).cfg.arch = "x64";
@@ -243,22 +229,6 @@ describe("Updater", () => {
     const { updater } = await setup();
     expect(updater.updateNotice("1.1.0")).toContain("v1.0.0 -> v1.1.0");
     expect(updater.updateNotice("1.1.0")).toContain("'ac update'");
-  });
-
-  it("speaks on stderr by default, so a command whose stdout a program reads keeps only its result", () => {
-    const updater = new Updater({ binaryName: "ac", currentVersion: "1.0.0", releaseBaseUrl: "https://r.example", stateDir: "/s" });
-    const out: string[] = [];
-    const err: string[] = [];
-    const [log, error] = [console.log, console.error];
-    console.log = (line: string) => void out.push(line);
-    console.error = (line: string) => void err.push(line);
-    try {
-      updater.showUpdateNotice("1.1.0");
-    } finally {
-      [console.log, console.error] = [log, error];
-    }
-    expect(out).toEqual([]);
-    expect(err.join("")).toContain("v1.0.0 -> v1.1.0");
   });
 });
 

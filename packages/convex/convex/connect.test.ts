@@ -69,6 +69,17 @@ async function seeded() {
 
 type T = ReturnType<typeof convexTest>;
 
+/** Run every scheduled job to the end, including the ones they schedule. */
+async function settleScheduled(t: T): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    await new Promise((r) => setTimeout(r, 5));
+    const open = (await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((j) => j.state.kind === "pending" || j.state.kind === "inProgress");
+    if (open.length === 0) return;
+    await t.finishInProgressScheduledFunctions();
+  }
+  throw new Error("scheduled jobs never settled");
+}
+
 /** The state codecast sends with the connect link and again at the exchange. */
 const STATE = "s-1";
 
@@ -669,11 +680,20 @@ describe("sealed Gmail credentials", () => {
         expiry: Date.now() + 3_600_000,
       });
     });
-    await t.mutation(api.dispatch.dispatch, { token, action: "disconnectAccount", args: {} });
-    const jobs = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    const revoke = jobs.find((j) => j.name.includes("revokeToken"));
-    expect(revoke?.args[0]).toEqual({ accountId, sealed });
-    expect(JSON.stringify(jobs)).not.toContain("plain-refresh");
-    expect(JSON.stringify(jobs)).not.toContain("ya29.plain");
+    // The revoke calls Google; answer it here, and let the disconnect's jobs
+    // finish before the test ends, or they land in the next file's harness.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    try {
+      await t.mutation(api.dispatch.dispatch, { token, action: "disconnectAccount", args: {} });
+      const jobs = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+      const revoke = jobs.find((j) => j.name.includes("revokeToken"));
+      expect(revoke?.args[0]).toEqual({ accountId, sealed });
+      expect(JSON.stringify(jobs)).not.toContain("plain-refresh");
+      expect(JSON.stringify(jobs)).not.toContain("ya29.plain");
+      await settleScheduled(t);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });

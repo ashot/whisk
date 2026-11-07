@@ -31,6 +31,7 @@ import {
 import { adoptGmailDraft, dropGmailDraft, isGmailDraft } from "../lib/drafts";
 import { clusteringSettings, scheduleClustering } from "../clusters";
 import { hasEnabledFilters } from "../filters";
+import { schedulePrivacyCheck } from "../privacy";
 import { heuristicCategory } from "../lib/categorize";
 import { isOwnAddress } from "@mail/shared/src/lib/sendAs";
 
@@ -536,6 +537,11 @@ export const applySyncedMessages = internalMutation({
       });
     }
 
+    // Every thread this apply changed is read against the person's privacy
+    // rules again (agents cannot see it until it has been), whoever wrote
+    // the new message.
+    await schedulePrivacyCheck(ctx, accountId, [...threadSubjects.keys()]);
+
     // Classification, cheapest layer first: learned sender rules, then the
     // structural heuristics — both free, applied right here — and only what
     // neither can place goes to the model in one scheduled batch.
@@ -613,9 +619,9 @@ export const applySyncedMessages = internalMutation({
     // now, in one batch) and the topic clusters (debounced, so a backfill
     // costs one pass).
     if (firstSeen.length > 0 && process.env.ANTHROPIC_API_KEY && account) {
-      // New mail from someone else can change what a thread asks of the
-      // person, so every such thread is judged again for importance.
-      await ctx.scheduler.runAfter(0, internal.ai.actions.judgeImportance, {
+      // New mail from someone else can change where a thread belongs, so
+      // every such thread is scored again on every lens.
+      await ctx.scheduler.runAfter(0, internal.ai.actions.judgeLenses, {
         accountId,
         threadGmailIds: firstSeen,
       });
@@ -704,5 +710,6 @@ export const markMessagesDeleted = internalMutation({
     for (const threadGmailId of touchedThreads) {
       await settleThread(ctx, accountId, threadGmailId);
     }
+    await schedulePrivacyCheck(ctx, accountId, [...touchedThreads]);
   },
 });

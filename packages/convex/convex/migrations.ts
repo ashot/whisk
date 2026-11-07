@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
+import { IMPORTANT } from "@mail/shared/src/lib/lenses";
 import { adoptGmailDraft, isGmailDraft } from "./lib/drafts";
 import { isSealed, resealLegacyCredential } from "./lib/credentials";
 import { settleThread, threadByGmailId } from "./lib/threads";
@@ -256,5 +257,35 @@ export const unsealedCredentials = internalQuery({
       if (!isSealed(row.access_token) || !isSealed(row.refresh_token)) unsealed++;
     }
     return { total, unsealed };
+  },
+});
+
+/**
+ * Move the single-lens importance fields into the lens maps: a verdict
+ * becomes a score on the Important lens (high or low, until the next judge
+ * pass scores it properly), a hand mark becomes a placement. Pages through
+ * every thread and reschedules itself.
+ *   npx convex run migrations:lensesFromImportance
+ */
+export const lensesFromImportance = internalMutation({
+  args: { cursor: v.optional(v.string()) },
+  handler: async (ctx, { cursor }) => {
+    const page = await ctx.db.query("threads").paginate({ cursor: cursor ?? null, numItems: 200 });
+    let moved = 0;
+    for (const t of page.page) {
+      if (t.important === undefined && t.important_by === undefined && t.important_why === undefined) continue;
+      const patch: Partial<Doc<"threads">> = { important: undefined, important_by: undefined, important_why: undefined };
+      if (t.important !== undefined && t.important_by === "user") {
+        patch.lens_marks = { ...(t.lens_marks ?? {}), [IMPORTANT]: t.important };
+        patch.marked_at = t.updated_at;
+      } else if (t.important !== undefined && t.lens_scores?.[IMPORTANT] === undefined) {
+        patch.lens_scores = { ...(t.lens_scores ?? {}), [IMPORTANT]: t.important ? 80 : 20 };
+        if (t.important_why) patch.lens_why = { ...(t.lens_why ?? {}), [IMPORTANT]: t.important_why };
+      }
+      await ctx.db.patch(t._id, patch);
+      moved++;
+    }
+    if (!page.isDone) await ctx.scheduler.runAfter(0, internal.migrations.lensesFromImportance, { cursor: page.continueCursor });
+    return { moved, done: page.isDone };
   },
 });

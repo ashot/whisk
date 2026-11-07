@@ -9,11 +9,13 @@ import { mutation, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import {
-  requireAccounts,
   requireUserId,
+  resolveCaller,
   sessionsForToken,
   touchSession,
 } from "./lib/auth";
+import { assertPayloadVisible, readerFor } from "./lib/privacy";
+import { markPrivate, schedulePrivacyPass } from "./privacy";
 import {
   SYSTEM_LABEL_IDS,
   applyLabelsToThread,
@@ -42,8 +44,8 @@ import {
 } from "./clusters";
 import { describeActions, liveFilters, validateActions } from "./filters";
 import { spendModelBudget } from "./ai/filterSupport";
-import { markImportance, scheduleInboxPass } from "./importance";
-import { IMPORTANCE_BATCH, IMPORTANCE_INBOX_PASS } from "./ai/importance";
+import { markLens, scheduleLensPass } from "./lenses";
+import { LENS_BATCH, LENS_INBOX_PASS } from "./ai/lenses";
 import { checkOutgoingSize, outgoingAsAttachments } from "@mail/shared/src/lib/attachments";
 import { outgoingAttachmentValidator } from "./schema";
 
@@ -100,13 +102,18 @@ export const dispatch = mutation({
     // A connected app reaches only the side effects its scopes cover (an
     // unknown action needs no scope, and does nothing). Prefs patches below
     // resolve with no scope, so an app can never write them.
-    const accounts = await requireAccounts(
+    const { accounts, hidesPrivate } = await resolveCaller(
       ctx,
       token,
       Object.prototype.hasOwnProperty.call(SIDE_EFFECTS, action)
         ? (DISPATCH_SCOPES[action as SideEffectName] ?? undefined)
         : undefined,
     );
+    // A login kept from private mail cannot act on it either: a write that
+    // names a thread it cannot see fails as if the thread did not exist.
+    if (hidesPrivate) {
+      await assertPayloadVisible(ctx, await readerFor(ctx, accounts, true), sideEffectPayload(actionArgs));
+    }
     await touchSession(ctx, token);
 
     // Prefs belong to the USER, so theme/density follow the person across
@@ -125,7 +132,7 @@ export const dispatch = mutation({
       // The payload names which of the session's accounts it acts on; absent
       // means the primary. An account outside the session fails closed.
       const account = accountForPayload(accounts, payload);
-      return await sideEffect(ctx, { account, accounts, token }, payload, result);
+      return await sideEffect(ctx, { account, accounts, token, hidesPrivate }, payload, result);
     }
     return null;
   },
@@ -155,6 +162,8 @@ type Session = {
   account: Doc<"accounts">;
   accounts: Doc<"accounts">[];
   token: string | undefined;
+  /** The caller is kept from private mail (an app, an agent terminal). */
+  hidesPrivate: boolean;
 };
 
 type SideEffect = (
@@ -698,24 +707,48 @@ const setCategory: SideEffect = async (ctx, session, args) => {
 };
 
 // ---------------------------------------------------------------------------
-// Importance
+// Lenses
 // ---------------------------------------------------------------------------
 
-/** A hand mark: threads the person says are (or are not) important. Null
- *  hands them back to the model. */
-const setImportance: SideEffect = async (ctx, session, args) => {
+/** A hand placement: threads that belong in a lens, or do not. Null hands
+ *  them back to the model. */
+const setLensMark: SideEffect = async (ctx, session, args) => {
   const account = accountForPayload(session.accounts, args);
-  const important = args?.important;
-  if (important !== null && typeof important !== "boolean") throw new Error("setImportance needs important: true, false or null");
-  return await markImportance(ctx, account, args?.thread_gmail_ids ?? [], important);
+  const belongs = args?.belongs;
+  if (belongs !== null && typeof belongs !== "boolean") throw new Error("setLensMark needs belongs: true, false or null");
+  if (typeof args?.lens_id !== "string" || !args.lens_id) throw new Error("setLensMark needs a lens_id");
+  return await markLens(ctx, account, args?.thread_gmail_ids ?? [], args.lens_id, belongs);
 };
 
-/** The policy itself rides the prefs patch in this same dispatch; this
- *  judges every mailbox's recent inbox again under it. */
-const setImportancePolicy: SideEffect = async (ctx, session) => {
-  for (const account of session.accounts) await spendModelBudget(ctx, account, Math.ceil(IMPORTANCE_INBOX_PASS / IMPORTANCE_BATCH));
-  await scheduleInboxPass(ctx, session.accounts.map((a) => a._id));
+/** The lens itself rides the prefs patch in this same dispatch; this scores
+ *  every mailbox's recent inbox on it under its new description. */
+const saveLens: SideEffect = async (ctx, session, args) => {
+  if (typeof args?.id !== "string" || !args.id) throw new Error("saveLens needs an id");
+  for (const account of session.accounts) await spendModelBudget(ctx, account, Math.ceil(LENS_INBOX_PASS / LENS_BATCH));
+  await scheduleLensPass(ctx, session.accounts.map((a) => a._id), { lensIds: [args.id] });
   return { scheduled: session.accounts.length };
+};
+
+// ---------------------------------------------------------------------------
+// Private mail
+// ---------------------------------------------------------------------------
+
+/** The rules ride the prefs patch in this same dispatch; this reads every
+ *  mailbox's window against the ones that are new or reworded. A removed
+ *  rule needs no reading: its hits simply stop counting. */
+const savePrivacyRules: SideEffect = async (ctx, session) => {
+  await schedulePrivacyPass(ctx, session.accounts.map((a) => a._id));
+  return { scheduled: session.accounts.length };
+};
+
+/** Mark threads private or not private by hand (final over the rules), or
+ *  hand them back to the rules with `private: null`. */
+const setPrivate: SideEffect = async (ctx, session, args) => {
+  const account = accountForPayload(session.accounts, args);
+  const mark = args?.private;
+  if (mark !== null && typeof mark !== "boolean") throw new Error("setPrivate needs private: true, false or null");
+  const ids = Array.isArray(args?.thread_gmail_ids) ? (args.thread_gmail_ids as unknown[]).filter((x): x is string => typeof x === "string") : [];
+  return await markPrivate(ctx, account, ids, mark);
 };
 
 // ---------------------------------------------------------------------------
@@ -1032,10 +1065,12 @@ const saveFilter: SideEffect = async (ctx, session, args) => {
     : filters.find(f => f.text.toLowerCase() === text.toLowerCase());
   if (!existing && filters.length >= 20) throw new Error("Use up to 20 filters per mailbox");
   const now = Date.now();
-  const fields = { text, condition, actions, updated_at: now };
+  // A filter saved by a login kept from private mail never acts on it; one
+  // the person saves (or takes over by editing) acts on everything.
+  const fields = { text, condition, actions, hides_private: session.hidesPrivate || undefined, updated_at: now };
   let id: Id<"filters">;
   if (existing) {
-    const changed = existing.text !== text || existing.condition !== condition || JSON.stringify(existing.actions) !== JSON.stringify(actions);
+    const changed = existing.text !== text || existing.condition !== condition || JSON.stringify(existing.actions) !== JSON.stringify(actions) || !!existing.hides_private !== session.hidesPrivate;
     if (changed) await ctx.db.patch(existing._id, { ...fields, revision: (existing.revision ?? 0) + 1, last_error: undefined });
     id = existing._id;
   } else {
@@ -1096,8 +1131,10 @@ const SIDE_EFFECTS = {
   rsvpEvent,
   retryCalendarWrites,
   setCategory,
-  setImportance,
-  setImportancePolicy,
+  setLensMark,
+  saveLens,
+  savePrivacyRules,
+  setPrivate,
   setReminder,
   cancelReminder,
   addMemory,
@@ -1140,8 +1177,12 @@ export const DISPATCH_SCOPES: Record<SideEffectName, AppScope | null> = {
   deleteEvent: null,
   rsvpEvent: null,
   setCategory: "mail.organize",
-  setImportance: "mail.organize",
-  setImportancePolicy: null,
+  setLensMark: "mail.organize",
+  saveLens: null,
+  // Private mail is the person's to define and to open up: no app or agent
+  // login may change the rules or a mark, in either direction.
+  savePrivacyRules: null,
+  setPrivate: null,
   setReminder: "mail.organize",
   cancelReminder: "mail.organize",
   addMemory: null,

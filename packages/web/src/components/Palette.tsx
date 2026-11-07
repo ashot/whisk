@@ -4,7 +4,7 @@ import { activeContext, calendarCommand } from "../keys/bindings";
 import { useMailStore, useTracked } from "../store/mailStore";
 import { CATEGORIES } from "@mail/shared/src/lib/categories";
 import type { Label } from "../store/types";
-import { inScope, inboxGrouping } from "../store/selectors";
+import { inScope, inboxGrouping, inboxLenses, isInboxList, lensView } from "../store/selectors";
 import { signOut } from "../sync/ConvexSync";
 import { toggleTheme } from "../lib/theme";
 import {
@@ -149,8 +149,10 @@ export function Palette(): React.ReactElement {
     ];
     const whisk: Item[] = [
       { id: "whisk:filters", title: "Filters — tell Whisk what to find and what to do", hint: "Whisk", run: () => st.setFilters(true) },
-      { id: "whisk:importance", title: "Importance — what goes to Important, in your words", hint: "Whisk", run: () => st.setSettings(true) },
-      { id: "whisk:other", title: st.activeView === "other" ? "Go to Important" : "Go to Other — the rest of the inbox", hint: "i", run: () => st.setView(st.activeView === "other" ? "inbox" : "other") },
+      { id: "whisk:newlens", title: "New view — describe what belongs in it", hint: "Whisk", run: () => { if (!isInboxList(st.activeView)) st.setView("inbox"); st.setLensPanel("new"); } },
+      { id: "whisk:tunelens", title: "Tune this list — its description and how much it shows", hint: "Whisk", run: () => { if (!isInboxList(st.activeView)) st.setView("inbox"); st.setLensPanel("tune"); } },
+      ...inboxLenses(st).map((l) => ({ id: `lens:${l.id}`, title: `Go to ${l.name}`, hint: "i", run: () => st.setView(lensView(l.id)) })),
+      { id: "whisk:other", title: "Go to Other — the rest of the inbox", hint: "i", run: () => st.setView("other") },
       ...(Object.values(st.clusters).some((c) => !c.deleted)
         ? [inboxGrouping(st).grouped
           ? { id: "whisk:flat", title: "Inbox as a plain list", hint: "v", run: () => { st.setInboxGrouped(false); st.setView("inbox"); } }

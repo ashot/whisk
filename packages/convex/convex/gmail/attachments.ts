@@ -3,6 +3,7 @@ import { httpAction, internalQuery, mutation } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { accountsForUser, requireAccounts, rowsForToken, touchSession, userIdFromAuthJwt } from "../lib/auth";
 import { recordUse } from "../lib/actionAuth";
+import { mailReader, readerFor, seesId } from "../lib/privacy";
 import { allowedOrigins } from "./oauth";
 import { fetchAttachmentBytes, getAccessToken } from "./api";
 
@@ -34,11 +35,11 @@ export const attachmentContext = internalQuery({
     if (token && !viaHeader && (await rowsForToken(ctx, token)).some((r) => r.app_id)) {
       throw new Error("Unauthorized: an app token goes in the Authorization header");
     }
-    const accounts = userId
-      ? await accountsForUser(ctx, userId)
-      : await requireAccounts(ctx, token, "mail.read");
+    const reader = userId
+      ? await readerFor(ctx, await accountsForUser(ctx, userId), false)
+      : await mailReader(ctx, token);
     // The message may live in any of the caller's accounts; find its owner.
-    for (const account of accounts) {
+    for (const account of reader.accounts) {
       const message = await ctx.db
         .query("messages")
         .withIndex("by_account_gmail", (q) =>
@@ -46,6 +47,7 @@ export const attachmentContext = internalQuery({
         )
         .unique();
       if (message && !message.deleted) {
+        if (!(await seesId(ctx, reader, account._id, message.thread_gmail_id))) return null;
         return { accountId: account._id, provider: account.provider };
       }
     }

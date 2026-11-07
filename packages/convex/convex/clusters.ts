@@ -8,7 +8,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
-import { requireAccounts } from "./lib/auth";
+import { mailReader } from "./lib/privacy";
 import { SYSTEM_LABEL_IDS } from "./lib/threads";
 import { THREAD_WINDOW } from "./lib/rows";
 import { modifyThreadLabels, schedulePump } from "./lib/outbound";
@@ -41,9 +41,9 @@ export function isTheme(c: { kind?: string }): boolean {
 export const listClusters = query({
   args: { token: v.optional(v.string()), since: v.optional(v.number()) },
   handler: async (ctx, { token, since }) => {
-    const accounts = await requireAccounts(ctx, token, "mail.read");
+    const reader = await mailReader(ctx, token);
     const out = [];
-    for (const account of accounts) {
+    for (const account of reader.accounts) {
       const rows = await ctx.db
         .query("clusters")
         .withIndex("by_account", (q) =>
@@ -52,11 +52,40 @@ export const listClusters = query({
             : q.eq("account_id", account._id).gt("updated_at", since),
         )
         .collect();
-      out.push(...rows);
+      if (!reader.hidesPrivate) {
+        out.push(...rows);
+        continue;
+      }
+      const visible = await visibleClusterIds(ctx, account._id, reader.sees);
+      out.push(...rows.filter((row) => row.deleted || visible.has(row._id)));
     }
     return out;
   },
 });
+
+/**
+ * The topics a reader kept from private mail may see: each one holding a
+ * thread it can see, and each theme over such a topic. A topic made only of
+ * private mail is named after that mail, so such a reader never gets it.
+ */
+async function visibleClusterIds(
+  ctx: { db: QueryCtx["db"] },
+  accountId: Id<"accounts">,
+  sees: (t: Doc<"threads">) => boolean,
+): Promise<Set<Id<"clusters">>> {
+  const visible = new Set<Id<"clusters">>();
+  for (const t of await ctx.db
+    .query("threads")
+    .withIndex("by_account_last", (q) => q.eq("account_id", accountId))
+    .order("desc")
+    .take(THREAD_WINDOW)) {
+    if (t.cluster_id && !t.deleted && sees(t)) visible.add(t.cluster_id);
+  }
+  for (const c of await liveClusters(ctx, accountId)) {
+    if (c.parent_id && visible.has(c._id)) visible.add(c.parent_id);
+  }
+  return visible;
+}
 
 // ---------------------------------------------------------------------------
 // Scheduling

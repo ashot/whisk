@@ -94,16 +94,31 @@ export type ScopeNeed = AppScope | readonly AppScope[];
 
 export const scopeNeedValidator = v.union(appScopeValidator, v.array(appScopeValidator));
 
-/** Whether a stored app row may call a function that needs `need`. A row
- *  that is not an app's passes; an app row never passes an empty need. */
+/** A login limited to scopes: a connected app's, or a terminal login for
+ *  agents (`hides_private`). Every other login is the person's own. */
+export function rowIsLimited(row: { app_id?: string; hides_private?: boolean }): boolean {
+  return !!row.app_id || !!row.hides_private;
+}
+
+/** The scopes a limited row holds: an app's live grant, or an agent login's
+ *  own list (every scope when it names none). */
+export function rowScopes(row: { app_id?: string; scopes?: readonly string[] }): AppScope[] {
+  if (row.app_id) return liveScopes(row.app_id, row.scopes);
+  return row.scopes ? ALL_SCOPES.filter((scope) => row.scopes!.includes(scope)) : [...ALL_SCOPES];
+}
+
+/** Whether a stored login row may call a function that needs `need`. The
+ *  person's own logins pass; a limited row never passes an empty need, so a
+ *  function that names no scope (prefs, privacy rules, other logins) is the
+ *  person's alone. */
 export function appRowAllows(
-  row: { app_id?: string; scopes?: string[] },
+  row: { app_id?: string; scopes?: string[]; hides_private?: boolean },
   need: ScopeNeed | undefined,
 ): boolean {
-  if (!row.app_id) return true;
+  if (!rowIsLimited(row)) return true;
   const needed: readonly AppScope[] = need === undefined ? [] : typeof need === "string" ? [need] : need;
   if (needed.length === 0) return false;
-  const held = liveScopes(row.app_id, row.scopes);
+  const held = rowScopes(row);
   return needed.every((scope) => held.includes(scope));
 }
 

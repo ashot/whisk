@@ -6,14 +6,14 @@ import { actionAccounts, chargeAppModelCall, recordUse } from "../lib/actionAuth
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { CATEGORIES } from "@mail/shared/src/lib/categories";
-import { FAST_MODEL, IMPORTANCE_MODEL, SMART_MODEL, aiConfigured, complete, completeJson } from "./llm";
+import { FAST_MODEL, LENS_MODEL, SMART_MODEL, aiConfigured, complete, completeJson } from "./llm";
 import { transcriptOf } from "./mailText";
 import type { ClusterCandidate } from "../clusters";
 import type { JudgeRow } from "../filters";
 import { MIN_TOPIC, clusterSystem, groupCandidates, parseClusterVerdict, parseThemeVerdict, themeSystem, type LooseSender, type ThemeRow, type ThemeStream } from "./grouping";
 import { JUDGE_BATCH, JUDGE_SYSTEM, judgeView, parseJudgeVerdict } from "./judge";
-import { IMPORTANCE_BATCH, IMPORTANCE_INBOX_PASS, IMPORTANCE_SYSTEM, importanceInput, parseImportanceVerdict, type ImportanceCorrection, type ImportanceVerdict } from "./importance";
-import { MAX_IMPORTANCE_POLICY } from "@mail/shared/src/lib/importance";
+import { LENS_BATCH, LENS_INBOX_PASS, LENS_SYSTEM, lensInput, parseLensVerdict, type JudgedLens, type LensCorrection, type LensScore } from "./lenses";
+import { MAX_LENS_NAME, MAX_LENS_POLICY } from "@mail/shared/src/lib/lenses";
 import { draftSystem } from "./draft";
 import { buildSuggestPrompt, sanitizeSuggestions, normalizeForMatch } from "./suggest";
 
@@ -596,8 +596,12 @@ async function judgeRows(
   return all;
 }
 
-async function readJudgeRows(ctx: ActionCtx, accountId: Id<"accounts">, ids?: string[], limit = 200): Promise<JudgeRow[]> {
-  const threadIds: string[] = ids ?? await ctx.runQuery(internal.filters.inboxIds, { accountId, limit });
+/** The judge rows for threads (or the recent inbox). With `forToken`, only
+ *  the threads that caller may see: a dry run must not read private mail
+ *  for a login kept from it. */
+async function readJudgeRows(ctx: ActionCtx, accountId: Id<"accounts">, ids?: string[], limit = 200, forToken?: { token?: string }): Promise<JudgeRow[]> {
+  let threadIds: string[] = ids ?? await ctx.runQuery(internal.filters.inboxIds, { accountId, limit });
+  if (forToken) threadIds = await ctx.runQuery(internal.privacy.visibleIds, { token: forToken.token, accountId, gmailIds: threadIds });
   const rows: JudgeRow[] = [];
   for (let i = 0; i < threadIds.length; i += JUDGE_BATCH) {
     rows.push(...await ctx.runQuery(internal.filters.threadsForJudging, { accountId, threadGmailIds: threadIds.slice(i, i + JUDGE_BATCH) }));
@@ -623,7 +627,7 @@ export const previewFilter = action({
     if (!condition.trim() || condition.length > 2000) throw new Error("Use a condition of at most 2,000 characters");
     await ctx.runMutation(internal.ai.filterSupport.takeModelBudget, { accountId: account._id, cost: 1 });
     const owner: string = await ctx.runQuery(internal.ai.filterSupport.ownerAddress, { accountId: account._id });
-    const rows = await readJudgeRows(ctx, account._id, undefined, Math.min(limit ?? 200, 400));
+    const rows = await readJudgeRows(ctx, account._id, undefined, Math.min(limit ?? 200, 400), { token });
     const hits = await judgeRows(owner, [{ _id: "f", condition }], rows);
     return hits.map((h) => h.thread_gmail_id);
   },
@@ -683,12 +687,13 @@ export const judgeFilters = internalAction({
 });
 
 // ---------------------------------------------------------------------------
-// Importance
+// Lenses
 // ---------------------------------------------------------------------------
 
-type JudgeContext = { owner: string; policy: string; revision: number; corrections: ImportanceCorrection[] };
+type LensContext = { owner: string; lenses: Array<JudgedLens & { revision: number }>; corrections: LensCorrection[] };
+type ScoredRow = { row: JudgeRow; scores: Record<string, LensScore> };
 
-const IMPORTANCE_CONCURRENCY = 6;
+const LENS_CONCURRENCY = 6;
 
 /** Run `work` over items at most `limit` at a time, settling each. */
 async function settleInWaves<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
@@ -703,28 +708,25 @@ async function settleInWaves<T, R>(items: T[], limit: number, work: (item: T) =>
   return out;
 }
 
-/** Judge rows against a policy in batches, all at once. A bad batch throws
- *  after the good ones have been handed to `onBatch`. */
-async function judgeImportanceRows(
-  context: Omit<JudgeContext, "revision">,
-  rows: JudgeRow[],
-  onBatch?: (verdicts: Array<{ row: JudgeRow } & ImportanceVerdict>) => Promise<void>,
-): Promise<Array<{ row: JudgeRow } & ImportanceVerdict>> {
+/** Score rows on every lens in the context, a few batches at a time. A bad
+ *  batch throws after the good ones have been handed to `onBatch`. */
+async function scoreRows(context: Omit<LensContext, "lenses"> & { lenses: JudgedLens[] }, rows: JudgeRow[], onBatch?: (scored: ScoredRow[]) => Promise<void>): Promise<ScoredRow[]> {
+  if (context.lenses.length === 0) return [];
   const batches: JudgeRow[][] = [];
-  for (let i = 0; i < rows.length; i += IMPORTANCE_BATCH) batches.push(rows.slice(i, i + IMPORTANCE_BATCH));
-  // A few calls at a time: a whole-inbox pass is dozens of batches.
-  const settled = await settleInWaves(batches, IMPORTANCE_CONCURRENCY, async (batch) => {
+  for (let i = 0; i < rows.length; i += LENS_BATCH) batches.push(rows.slice(i, i + LENS_BATCH));
+  const ids = context.lenses.map((l) => l.id);
+  const settled = await settleInWaves(batches, LENS_CONCURRENCY, async (batch) => {
     const verdict = await completeJson<unknown>({
-      model: IMPORTANCE_MODEL,
-      system: IMPORTANCE_SYSTEM,
-      user: importanceInput({ ...context, rows: batch }),
-      maxTokens: 8000,
+      model: LENS_MODEL,
+      system: LENS_SYSTEM,
+      user: lensInput({ ...context, rows: batch }),
+      maxTokens: 12000,
       effort: "low",
-      timeoutMs: 60_000,
+      timeoutMs: 90_000,
     });
-    const judged = parseImportanceVerdict(verdict, batch.length).map((v, i) => ({ row: batch[i], ...v }));
-    if (onBatch) await onBatch(judged);
-    return judged;
+    const scored = parseLensVerdict(verdict, batch.length, ids).map((scores, i) => ({ row: batch[i], scores }));
+    if (onBatch) await onBatch(scored);
+    return scored;
   });
   const failure = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
   if (failure) throw failure.reason;
@@ -732,33 +734,30 @@ async function judgeImportanceRows(
 }
 
 /**
- * Judge threads against the person's importance policy and land the
- * verdicts. The sync path schedules it for threads with new inbound mail; a
- * policy save or a first pass calls it with no ids (the recent inbox).
+ * Score threads on the person's lenses and land the scores. The sync path
+ * schedules it for threads with new inbound mail (every lens); a description
+ * save calls it for one lens over the recent inbox.
  */
-export const judgeImportance = internalAction({
+export const judgeLenses = internalAction({
   args: {
     accountId: v.id("accounts"),
     threadGmailIds: v.optional(v.array(v.string())),
-    /** With no ids: how many of the newest inbox threads to judge. */
+    lensIds: v.optional(v.array(v.string())),
+    /** With no ids: how many of the newest inbox threads to score. */
     limit: v.optional(v.number()),
   },
-  handler: async (ctx, { accountId, threadGmailIds, limit }): Promise<{ applied: number }> => {
+  handler: async (ctx, { accountId, threadGmailIds, lensIds, limit }): Promise<{ applied: number }> => {
     if (!aiConfigured()) return { applied: 0 };
-    const context: JudgeContext = await ctx.runQuery(internal.importance.judgeContext, { accountId });
-    const rows = await readJudgeRows(ctx, accountId, threadGmailIds, limit ?? IMPORTANCE_INBOX_PASS);
+    const context: LensContext = await ctx.runQuery(internal.lenses.judgeContext, { accountId, lensIds });
+    if (context.lenses.length === 0) return { applied: 0 };
+    const rows = await readJudgeRows(ctx, accountId, threadGmailIds, limit ?? LENS_INBOX_PASS);
+    const revisions = Object.fromEntries(context.lenses.map((l) => [l.id, l.revision]));
     let applied = 0;
-    await judgeImportanceRows(context, rows, async (verdicts) => {
-      const result: { applied: number } = await ctx.runMutation(internal.importance.applyImportance, {
+    await scoreRows(context, rows, async (scored) => {
+      const result: { applied: number } = await ctx.runMutation(internal.lenses.applyScores, {
         accountId,
-        revision: context.revision,
-        verdicts: verdicts.map((v) => ({
-          thread_gmail_id: v.row.gmail_id,
-          important: v.important,
-          why: v.why,
-          message_count: v.row.message_count,
-          last_at: v.row.last_at,
-        })),
+        revisions,
+        results: scored.map((s) => ({ thread_gmail_id: s.row.gmail_id, message_count: s.row.message_count, last_at: s.row.last_at, scores: s.scores })),
       });
       applied += result.applied;
     });
@@ -766,24 +765,27 @@ export const judgeImportance = internalAction({
   },
 });
 
-/** Dry run of a draft policy over the recent inbox: every verdict, nothing
- *  changed. The client compares them with what each thread shows now. */
-export const previewImportance = action({
+/** Dry run of a draft description over the recent inbox: every thread's
+ *  score and reason, nothing changed. The client slides its cutoff over
+ *  them before saving. */
+export const previewLens = action({
   args: {
     token: v.optional(v.string()),
     accountId: v.optional(v.id("accounts")),
+    name: v.string(),
     policy: v.string(),
     limit: v.optional(v.number()),
   },
-  handler: async (ctx, { token, accountId, policy, limit }): Promise<Array<{ thread_gmail_id: string; important: boolean; why: string }>> => {
+  handler: async (ctx, { token, accountId, name, policy, limit }): Promise<Array<{ thread_gmail_id: string; score: number; why: string }>> => {
     const [account] = await actionAccounts(ctx, { token, accountId, scope: ["mail.read", "mail.organize"] });
     if (!account) throw new Error("Unauthorized: no connected accounts");
     if (!aiConfigured()) throw new Error("AI is not configured on this deployment");
-    if (!policy.trim() || policy.length > MAX_IMPORTANCE_POLICY) throw new Error(`Use a policy of at most ${MAX_IMPORTANCE_POLICY.toLocaleString("en-US")} characters`);
-    const rows = await readJudgeRows(ctx, account._id, undefined, Math.min(limit ?? 150, IMPORTANCE_INBOX_PASS));
-    await ctx.runMutation(internal.ai.filterSupport.takeModelBudget, { accountId: account._id, cost: Math.ceil(rows.length / IMPORTANCE_BATCH) });
-    const context: JudgeContext = await ctx.runQuery(internal.importance.judgeContext, { accountId: account._id });
-    const verdicts = await judgeImportanceRows({ ...context, policy }, rows);
-    return verdicts.map((v) => ({ thread_gmail_id: v.row.gmail_id, important: v.important, why: v.why }));
+    if (!policy.trim() || policy.length > MAX_LENS_POLICY) throw new Error(`Describe the view in at most ${MAX_LENS_POLICY.toLocaleString("en-US")} characters`);
+    const rows = await readJudgeRows(ctx, account._id, undefined, Math.min(limit ?? 150, LENS_INBOX_PASS), { token });
+    await ctx.runMutation(internal.ai.filterSupport.takeModelBudget, { accountId: account._id, cost: Math.ceil(rows.length / LENS_BATCH) });
+    const context: LensContext = await ctx.runQuery(internal.lenses.judgeContext, { accountId: account._id, lensIds: [] });
+    const draft: JudgedLens = { id: "draft", name: name.trim().slice(0, MAX_LENS_NAME) || "View", policy };
+    const scored = await scoreRows({ ...context, lenses: [draft] }, rows);
+    return scored.map((s) => ({ thread_gmail_id: s.row.gmail_id, score: s.scores.draft.score, why: s.scores.draft.why }));
   },
 });

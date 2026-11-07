@@ -11,6 +11,7 @@ import { fmt } from "../colors";
 import { query } from "../client";
 import { settings, threadLink } from "../config";
 import {
+  currentLenses,
   listLabels,
   listThreads,
   matchAccount,
@@ -33,7 +34,7 @@ export function registerRead(program: Command): void {
   const ls = program
     .command("ls [view]")
     .alias("list")
-    .description("threads in a view: inbox (default: the mail your importance policy calls important), other (the rest of the inbox), starred, sent, archive, trash, spam, later, waiting, a lane, or label:<name>; past the synced mail, Gmail supplies the rest")
+    .description("threads in a view: inbox (default: the mail your Important view holds), other (the rest of the inbox), one of your views by name (whisk views), starred, sent, archive, trash, spam, later, waiting, a lane, or label:<name>; past the synced mail, Gmail supplies the rest")
     .option("-n, --limit <n>", "how many (no cap: older mail comes from Gmail)", "25")
     .option("--unread", "unread only")
     .option("--starred", "starred only")
@@ -45,11 +46,12 @@ export function registerRead(program: Command): void {
       view: string | undefined,
       opts: ReadOpts & { limit: string; unread?: boolean; starred?: boolean; attachments?: boolean; from?: string; since?: string },
     ) => {
-      const [{ accounts }, labels] = await Promise.all([session(), listLabels()]);
-      const resolved = resolveView(view, labels);
+      const [{ accounts }, labels, lenses] = await Promise.all([session(), listLabels(), currentLenses()]);
+      const resolved = resolveView(view, labels, lenses);
       const rows = await listThreads({
         view: resolved,
         labels,
+        lenses,
         accounts: scopeAccounts(accounts, opts.account),
         limit: Math.max(1, Number(opts.limit) || 25),
         unread: opts.unread,
@@ -62,7 +64,7 @@ export function registerRead(program: Command): void {
       // The inbox lists only important mail; say what sits beside it, so a
       // reader never takes the list for the whole inbox.
       if (!opts.json && resolved === "inbox") {
-        const other = await listThreads({ view: "other", labels, accounts: scopeAccounts(accounts, opts.account), limit: 100_000, unread: opts.unread, starred: opts.starred, attachments: opts.attachments, from: opts.from, since: opts.since });
+        const other = await listThreads({ view: "other", labels, lenses, accounts: scopeAccounts(accounts, opts.account), limit: 100_000, unread: opts.unread, starred: opts.starred, attachments: opts.attachments, from: opts.from, since: opts.since });
         if (other.length > 0) console.log(fmt.muted(`\n${other.length} more under Other: whisk ls other`));
       }
     },

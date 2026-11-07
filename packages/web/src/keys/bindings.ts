@@ -1,7 +1,7 @@
 import { keyEngine, type Binding, type KeyContext } from "@platform/keys";
 import { sendComposeReady } from "../lib/composeAttach";
 import { mailStore } from "../store/mailStore";
-import { inboxGrouping, isInboxList, shownTopic, TOPIC_ROW } from "../store/selectors";
+import { inboxGrouping, inboxLenses, isInboxList, lensView, shownTopic, TOPIC_ROW } from "../store/selectors";
 import { orderedAccounts } from "../store/selectors";
 import type { ViewId } from "../store/types";
 
@@ -121,9 +121,9 @@ export const BINDINGS: Binding[] = [
   { keys: "U", context: READING, group: "Actions", description: "Mark as unread", handler: () => S().setRead(false) },
   { keys: "l", context: READING, group: "Actions", description: "Label…", handler: () => S().setLabelPicker(true) },
   { keys: "m", context: READING, group: "Actions", description: "File under…", handler: () => S().setCategoryPicker(true) },
-  { keys: "+", context: READING, group: "Actions", description: "Mark important", handler: () => S().markImportant(true) },
-  { keys: "-", context: READING, group: "Actions", description: "Mark not important (to Other)", handler: () => S().markImportant(false) },
-  { keys: "i", context: "list", group: "Go to", description: "Important ↔ Other", when: () => isInboxList(S().activeView), handler: () => S().setView(S().activeView === "inbox" ? "other" : "inbox") },
+  { keys: "+", context: READING, group: "Actions", description: "Belongs in this list (Important from Other)", handler: () => S().markInLens(true) },
+  { keys: "-", context: READING, group: "Actions", description: "Does not belong in this list", handler: () => S().markInLens(false) },
+  { keys: "i", context: "list", group: "Go to", description: "Next inbox list: Important, your views, Other", when: () => isInboxList(S().activeView), handler: () => { const s = S(); const views = [...inboxLenses(s).map((l) => lensView(l.id)), "other" as const]; s.setView(views[(views.indexOf(s.activeView as never) + 1) % views.length]); } },
   { keys: "z", context: READING, group: "Actions", description: "Snooze…", handler: () => S().setTimePicker("snooze") },
   { keys: "F", context: READING, group: "Actions", description: "Watch for a reply…", handler: () => S().setTimePicker("followup") },
   { keys: "backspace", context: READING, group: "Actions", description: "Clear reminder", handler: () => S().unRemind() },

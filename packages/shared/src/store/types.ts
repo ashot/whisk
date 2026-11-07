@@ -68,13 +68,19 @@ export type Thread = {
   cluster_id?: string;
   /** "user" placements are final for the model. */
   cluster_source?: "user" | "ai";
-  /** The importance verdict: false files it under Other; absent = not
-   *  judged yet, which shows in the inbox. */
-  important?: boolean;
-  /** "user" marks are final, and examples the model learns from. */
-  important_by?: "user" | "ai";
-  /** The model's few words on why. */
-  important_why?: string;
+  /** Per lens id: the model's 0-100 score, its reason, and the person's
+   *  hand placement (final). See lib/lenses. */
+  lens_scores?: Record<string, number>;
+  lens_why?: Record<string, string>;
+  lens_marks?: Record<string, boolean>;
+  marked_at?: number;
+  /** Private mail: the person's hand mark and the model's verdict against
+   *  their privacy rules. See lib/privacy. */
+  private_mark?: boolean;
+  private_hits?: string[];
+  private_checked?: string[];
+  private_count?: number;
+  private_why?: string;
   updated_at: number;
   deleted?: boolean;
 };
@@ -248,6 +254,7 @@ export type ViewId =
   | "calendar"
   | "later"
   | "waiting"
+  | `lens:${string}`
   | `cat:${string}`
   | `cluster:${string}`
   | `label:${string}`

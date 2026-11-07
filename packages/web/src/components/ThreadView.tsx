@@ -1,4 +1,4 @@
-import { ImportanceChip } from "./Importance";
+import { LensChips } from "./Lenses";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useMailStore, useTracked } from "../store/mailStore";
 import { msgExpandedDefault, shownTopic, threadDrafts } from "../store/selectors";
@@ -262,7 +262,7 @@ export function ThreadView(): React.ReactElement | null {
             {topic.name}
           </button>
         )}
-        <ImportanceChip thread={t} />
+        <LensChips thread={t} />
         {t.is_starred && <span className="thread-star">★</span>}
         {messages.length > 1 && (
           <span className="thread-msgcount">{messages.length}</span>

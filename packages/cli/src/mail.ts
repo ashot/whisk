@@ -13,6 +13,7 @@ import type {
 } from "@mail/shared/src/store/types";
 import { L } from "@mail/shared/src/store/types";
 import { threadInView, liveReminders, reminderFor } from "@mail/shared/src/store/selectors";
+import { IMPORTANT, lensesFromPrefs, type Lens } from "@mail/shared/src/lib/lenses";
 import { seedCompose } from "@mail/shared/src/lib/compose";
 import { isOwnAddress } from "@mail/shared/src/lib/sendAs";
 import { isCategoryId } from "@mail/shared/src/lib/categories";
@@ -96,7 +97,15 @@ export type ListOptions = {
   from?: string;
   since?: string;
   attachments?: boolean;
+  /** The person's lenses, which decide the inbox lists. */
+  lenses?: Lens[];
 };
+
+/** The person's lenses, Important first, as their prefs hold them now. */
+export async function currentLenses(): Promise<Lens[]> {
+  const state = (await query(api.sync.getAccount, {})).client_state as { prefs?: Record<string, unknown> } | null;
+  return lensesFromPrefs(state?.prefs as Parameters<typeof lensesFromPrefs>[0]);
+}
 
 /** Threads of a view, newest first, across the accounts in scope. Later and
  *  Waiting join the reminders table, like the app's rail does. The synced
@@ -123,7 +132,7 @@ export async function listThreads(opts: ListOptions): Promise<Thread[]> {
   }
 
   const keep = threadFilter(opts);
-  let inView: (t: Thread) => boolean = (t) => threadInView(t, opts.view);
+  let inView: (t: Thread) => boolean = (t) => threadInView(t, opts.view, undefined, opts.lenses);
   if (opts.view.startsWith("label:") && opts.labels) {
     const sample = opts.labels.find((l) => l.gmail_id === opts.view.slice("label:".length));
     const perAccount = new Map(
@@ -202,9 +211,11 @@ export function gmailQueryForList(opts: ListOptions): string | null {
 }
 
 /** Named views an agent can ask for on the command line. */
-export function resolveView(name: string | undefined, labels: Label[]): ViewId {
+export function resolveView(name: string | undefined, labels: Label[], lenses: Lens[] = []): ViewId {
   const raw = (name ?? "inbox").trim();
   const lower = raw.toLowerCase();
+  const lens = lenses.find((l) => l.name.toLowerCase() === lower || l.id === lower);
+  if (lens) return lens.id === IMPORTANT ? "inbox" : `lens:${lens.id}`;
   const plain: ViewId[] = ["inbox", "other", "starred", "sent", "archive", "trash", "spam", "later", "waiting"];
   if ((plain as string[]).includes(lower)) return lower as ViewId;
   if (lower === "all" || lower === "everything") return "archive"; // closest: not inbox, not trash
@@ -221,7 +232,7 @@ export function resolveView(name: string | undefined, labels: Label[]): ViewId {
   if (label) return `label:${label.gmail_id}`;
   if (lower.startsWith("label:")) throw new Error(`No label "${labelName}". See: whisk labels`);
   throw new Error(
-    `Unknown view "${raw}". Views: inbox (the important mail), other (the rest of the inbox), starred, sent, archive, trash, spam, later, waiting, a lane (newsletters, receipts, …) or a label name.`,
+    `Unknown view "${raw}". Views: inbox (the important mail), other (the rest of the inbox), a view by name (whisk views), starred, sent, archive, trash, spam, later, waiting, a lane (newsletters, receipts, …) or a label name.`,
   );
 }
 

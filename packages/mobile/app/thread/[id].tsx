@@ -1,3 +1,5 @@
+import { IMPORTANT, inLens, lensJudged } from "@mail/shared/src/lib/lenses";
+import { inboxLenses } from "@mail/shared/src/store/selectors";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
@@ -118,20 +120,23 @@ export default function ThreadScreen(): React.ReactElement | null {
           <Text numberOfLines={2} style={[styles.subject, { color: t.ink }]}>
             {thread.subject || "(no subject)"}
           </Text>
-          {thread.important !== undefined && thread.label_ids.includes("INBOX") && (
-            <Pressable
-              hitSlop={6}
-              onPress={() => st().markImportant(!thread.important, [thread._id])}
-              style={styles.importance}
-            >
-              <Text style={[styles.importanceLabel, { color: thread.important ? t.accent : t.inkMuted }]}>
-                {thread.important ? "Important" : "Other"}
-              </Text>
-              <Text numberOfLines={1} style={[styles.importanceWhy, { color: t.inkFaint }]}>
-                {thread.important_by === "user" ? "marked by you" : thread.important_why}
-              </Text>
-            </Pressable>
-          )}
+          {lensJudged(thread, IMPORTANT) && thread.label_ids.includes("INBOX") && (() => {
+            const important = inLens(thread, inboxLenses(st())[0]);
+            return (
+              <Pressable
+                hitSlop={6}
+                onPress={() => st().markInLens(!important, [thread._id], IMPORTANT)}
+                style={styles.importance}
+              >
+                <Text style={[styles.importanceLabel, { color: important ? t.accent : t.inkMuted }]}>
+                  {important ? "Important" : "Other"}
+                </Text>
+                <Text numberOfLines={1} style={[styles.importanceWhy, { color: t.inkFaint }]}>
+                  {thread.lens_marks?.[IMPORTANT] !== undefined ? "placed by you" : thread.lens_why?.[IMPORTANT]}
+                </Text>
+              </Pressable>
+            );
+          })()}
         </View>
         {thread.is_starred && (
           <Ionicons name="star" size={15} color={t.star} style={{ marginTop: 3 }} />

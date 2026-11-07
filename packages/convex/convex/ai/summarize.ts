@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "../_generated/server";
-import { requireAccount, requireAccounts } from "../lib/auth";
+import { mailReader, readerFor } from "../lib/privacy";
 
 // Catch up on a thread without reading it. Summaries cache by message count:
 // reopening costs nothing until new mail lands in the thread. `latest` asks
@@ -19,20 +19,19 @@ export const summaryContext = internalQuery({
     latest: v.optional(v.boolean()),
   },
   handler: async (ctx, { token, accountId, threadGmailId, system, latest }) => {
-    const accounts =
+    // A notification is the server itself, never an agent.
+    const reader =
       system && accountId
-        ? [await ctx.db.get(accountId)].filter((a) => a !== null)
-        : accountId
-          ? [await requireAccount(ctx, token, accountId, "mail.read")]
-          : await requireAccounts(ctx, token, "mail.read");
-    for (const account of accounts) {
+        ? await readerFor(ctx, [await ctx.db.get(accountId)].filter((a) => a !== null), false)
+        : await mailReader(ctx, token, "mail.read", accountId);
+    for (const account of reader.accounts) {
       const thread = await ctx.db
         .query("threads")
         .withIndex("by_account_gmail", (q) =>
           q.eq("account_id", account._id).eq("gmail_id", threadGmailId),
         )
         .unique();
-      if (!thread || thread.deleted) continue;
+      if (!thread || thread.deleted || !reader.sees(thread)) continue;
 
       const cached = await ctx.db
         .query("thread_ai")

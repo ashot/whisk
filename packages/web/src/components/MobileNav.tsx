@@ -1,6 +1,6 @@
 import React from "react";
 import { useMailStore, useTracked } from "../store/mailStore";
-import { inboxUnreadCount } from "../store/selectors";
+import { inboxLenses, inboxUnreadCount, isInboxList } from "../store/selectors";
 import { runKey } from "../keys/bindings";
 import { openSearch } from "./Rail";
 
@@ -10,9 +10,9 @@ import { openSearch } from "./Rail";
 export function NavButton(): React.ReactElement {
   const s = useTracked([
     (s) => s.activeView,
-    (s) => inboxUnreadCount(s.threads, s.accountScope, s.clusters) > 0,
+    (s) => inboxUnreadCount(s.threads, s.accountScope, s.clusters, inboxLenses(s)) > 0,
   ]);
-  const dot = s.activeView !== "inbox" && inboxUnreadCount(s.threads, s.accountScope, s.clusters) > 0;
+  const dot = !isInboxList(s.activeView) && inboxUnreadCount(s.threads, s.accountScope, s.clusters, inboxLenses(s)) > 0;
   return (
     <button className="nav-btn mobile-only" type="button" aria-label="Open navigation" onClick={() => useMailStore.getState().setNav(true)}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" aria-hidden>

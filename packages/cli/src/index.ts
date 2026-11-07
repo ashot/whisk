@@ -8,6 +8,7 @@ import { registerRead } from "./commands/read";
 import { registerWrite } from "./commands/write";
 import { registerTriage } from "./commands/triage";
 import { registerTopics } from "./commands/topics";
+import { registerViews } from "./commands/views";
 import { registerSnippet } from "./commands/snippet";
 import { registerSubscribe } from "./commands/subscribe";
 
@@ -37,6 +38,7 @@ registerTriage(program);
 registerSubscribe(program);
 registerSnippet(program);
 registerTopics(program);
+registerViews(program);
 registerCalendar(program);
 
 program.parseAsync(process.argv).catch((error: unknown) => {

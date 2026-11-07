@@ -28,8 +28,8 @@ export type AiClient = {
   }) => Promise<{ condition: string; actions: Array<{ kind: string; arg?: string }> }>;
   /** Dry run: the inbox thread ids a condition matches right now. */
   previewFilter: (input: { condition: string; accountId?: string; limit?: number }) => Promise<string[]>;
-  /** Dry run: every recent inbox thread's verdict under a draft policy. */
-  previewImportance: (input: { policy: string; accountId?: string; limit?: number }) => Promise<Array<{ thread_gmail_id: string; important: boolean; why: string }>>;
+  /** Dry run: every recent inbox thread's score on a draft lens. */
+  previewLens: (input: { name: string; policy: string; accountId?: string; limit?: number }) => Promise<Array<{ thread_gmail_id: string; score: number; why: string }>>;
 };
 
 let client: AiClient | null = null;

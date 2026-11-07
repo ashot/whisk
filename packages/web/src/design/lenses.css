@@ -1,0 +1,295 @@
+/* Lenses: the inbox lists as tabs in the list's title, the panel that
+   tunes the one on screen, and its marks on an open conversation. */
+
+/* The inbox lists are the list's title: each tab reads at the title's
+   size and face, and the one on screen carries the ink. */
+.lens-tabs {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 16px;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.lens-tab {
+  padding: 0;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font-family: var(--font-read);
+  font-size: 22px;
+  font-weight: 550;
+  color: var(--m-ink-faint);
+  white-space: nowrap;
+}
+
+.lens-tab:hover {
+  color: var(--m-ink-muted);
+}
+
+.lens-tab[aria-selected="true"] {
+  color: var(--m-ink);
+}
+
+.lens-tab-count {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--m-accent);
+  vertical-align: 0.5em;
+  margin-left: 2px;
+}
+
+.lens-tools {
+  display: inline-flex;
+  gap: 2px;
+  align-self: center;
+}
+
+.lens-tool {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--m-ink-faint);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lens-tool:hover,
+.lens-tool[aria-pressed="true"] {
+  color: var(--m-ink);
+  background: var(--m-bg-hover);
+}
+
+/* The tuning panel: the lens of the list on screen, under the tabs. */
+/* The panel sits in the list's own column, like a topic's head. */
+.lens-panel {
+  width: calc(100% - 52px);
+  max-width: calc(980px - 52px);
+  margin: 0 auto 12px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--m-rule);
+  border-radius: var(--radius-lg);
+  background: var(--m-bg-raised);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.lens-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.lens-panel-name,
+.lens-name {
+  font-family: var(--font-read);
+  font-size: 17px;
+  font-weight: 550;
+  color: var(--m-ink);
+}
+
+.lens-name {
+  flex: 0 1 260px;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  border-bottom: 1px solid var(--m-rule);
+  background: none;
+  outline: none;
+}
+
+.lens-name:focus {
+  border-bottom-color: var(--m-rule-strong);
+}
+
+.lens-panel-stat {
+  flex: 1;
+  font-size: 12px;
+  color: var(--m-ink-muted);
+}
+
+.lens-done {
+  margin-left: auto;
+}
+
+.lens-cutoff {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lens-cutoff-end {
+  font-size: 12px;
+  color: var(--m-ink-muted);
+}
+
+.lens-slider {
+  flex: 0 1 320px;
+  accent-color: var(--m-accent);
+  cursor: pointer;
+}
+
+.lens-cutoff-count {
+  margin-left: 6px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--m-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.lens-cutoff-at {
+  font-weight: 400;
+  color: var(--m-ink-muted);
+}
+
+.lens-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lens-actions-gap {
+  flex: 1;
+}
+
+.lens-error {
+  font-size: 12px;
+  color: var(--m-danger);
+}
+
+.lens-score {
+  width: 26px;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--m-ink-faint);
+}
+
+.thread-lens-chip {
+  cursor: pointer;
+  border: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--m-ink-muted);
+  background: var(--m-bg-hover);
+}
+
+.thread-importance {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.thread-importance-chip {
+  cursor: pointer;
+  border: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--m-ink-muted);
+  background: var(--m-bg-hover);
+}
+
+.thread-importance-chip[data-important] {
+  color: var(--m-accent-ink);
+  background: var(--m-accent-soft);
+}
+
+.thread-importance-why {
+  font-size: 12px;
+  color: var(--m-ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 32ch;
+}
+
+.importance-policy {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--m-rule);
+  border-radius: var(--radius);
+  background: var(--m-bg-sunken);
+  color: var(--m-ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.importance-policy:focus {
+  outline: none;
+  border-color: var(--m-rule-strong);
+}
+
+.importance-preview {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.importance-preview-group {
+  min-width: 0;
+}
+
+.importance-preview-sum,
+.importance-preview-title {
+  font-size: 12px;
+  color: var(--m-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.importance-preview-title {
+  margin-bottom: 4px;
+  color: var(--m-ink);
+  font-weight: 550;
+}
+
+.importance-move {
+  width: 100%;
+  min-width: 0;
+}
+
+.importance-move .filter-match-subject {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* The reason gets up to two fifths of the row and truncates rather than
+   pushing past the panel. */
+.importance-move-why {
+  flex: 0 1 40%;
+  min-width: 0;
+  text-align: right;
+  font-size: 12px;
+  color: var(--m-ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A row's score while its list is tuned, so the cutoff reads against it. */
+.row-score {
+  min-width: 22px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--m-ink-faint);
+}

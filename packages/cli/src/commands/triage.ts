@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import { api } from "@mail/convex/convex/_generated/api";
 import type { Memory, Thread } from "@mail/shared/src/store/types";
 import { isCategoryId, CATEGORY_IDS } from "@mail/shared/src/lib/categories";
+import { IMPORTANT } from "@mail/shared/src/lib/lenses";
 import { fmt } from "../colors";
 import { query } from "../client";
 import {
@@ -63,7 +64,7 @@ export function registerTriage(program: Command): void {
     waitOption(program.command(`${verb} <ids...>`).description(description)).action(async (list: string[], opts: WaitOpts) => {
       const threads = await resolveThreads(ids(list));
       for (const [account_id, thread_gmail_ids] of byAccount(threads)) {
-        await dispatch("setImportance", { thread_gmail_ids, important, account_id });
+        await dispatch("setLensMark", { thread_gmail_ids, lens_id: IMPORTANT, belongs: important, account_id });
       }
       console.log(`Moved ${plural(threads.length, "thread")} to ${important ? "Important" : "Other"}.`);
       await settle(opts);

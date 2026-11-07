@@ -2,9 +2,8 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { create } from "mutative";
 import { applyClientPref, mailStore } from "./mailStore";
 import { setRemoteSearch } from "./searchBridge";
-import { threadDrafts } from "./selectors";
+import { inboxLenses, threadDrafts } from "./selectors";
 import { L, type Draft, type Thread } from "./types";
-import { DEFAULT_IMPORTANCE_POLICY } from "../lib/importance";
 
 // Integration: the mail store on the REAL platform engine. No dispatch/outbox
 // wired (node test env) — these tests cover optimistic state, pending
@@ -628,34 +627,42 @@ describe("full search paging", () => {
   });
 });
 
-describe("importance", () => {
-  test("- moves the cursor's thread to Other and seats the cursor on the next row", () => {
+describe("lenses", () => {
+  test("- takes the cursor's thread out of Important and seats the cursor on the next row", () => {
     const a = serverThread([L.INBOX]);
-    const b = serverThread([L.INBOX], { important: true, important_by: "ai", important_why: "Ada asks" });
+    const b = serverThread([L.INBOX], { lens_scores: { important: 90 }, lens_why: { important: "Ada asks" } });
     const c = serverThread([L.INBOX]);
     mailStore.getState().syncTable("threads", [a, b, c]);
     mailStore.getState().focusThread(b._id);
 
-    mailStore.getState().markImportant(false);
+    mailStore.getState().markInLens(false);
 
     const s = mailStore.getState();
-    expect(s.threads[b._id]).toMatchObject({ important: false, important_by: "user" });
-    expect(s.threads[b._id].important_why).toBeUndefined();
+    expect(s.threads[b._id].lens_marks).toEqual({ important: false });
     expect(s.focusedThreadId).toBe(a._id);
   });
 
-  test("a server echo does not undo a hand mark", () => {
-    const a = serverThread([L.INBOX], { important: true, important_by: "ai" });
+  test("a server echo does not undo a hand placement", () => {
+    const a = serverThread([L.INBOX], { lens_scores: { important: 90 } });
     mailStore.getState().syncTable("threads", [a]);
-    mailStore.getState().markImportant(false, [a._id]);
+    mailStore.getState().markInLens(false, [a._id]);
     mailStore.getState().syncTable("threads", [{ ...a, updated_at: a.updated_at + 1 }]);
-    expect(mailStore.getState().threads[a._id].important).toBe(false);
+    expect(mailStore.getState().threads[a._id].lens_marks).toEqual({ important: false });
   });
 
-  test("saving the policy bumps the revision, and the default saves as no policy", () => {
-    mailStore.getState().setImportancePolicy({ policy: "Only my sister" });
-    expect(mailStore.getState().clientState.importance).toEqual({ policy: "Only my sister", revision: 1 });
-    mailStore.getState().setImportancePolicy({ policy: DEFAULT_IMPORTANCE_POLICY });
-    expect(mailStore.getState().clientState.importance).toEqual({ policy: undefined, revision: 2 });
+  test("a new lens opens its list; a description change bumps its revision, a cutoff does not", () => {
+    const id = mailStore.getState().createLens("Kids", "School and childcare")!;
+    let s = mailStore.getState();
+    expect(s.activeView).toBe(`lens:${id}`);
+    expect(inboxLenses(s).map((l) => [l.id, l.revision])).toEqual([["important", 0], [id, 1]]);
+    s.setLensCutoff(id, 30);
+    s.saveLens({ id, name: "Kids", policy: "School and childcare" });
+    expect(inboxLenses(mailStore.getState()).find((l) => l.id === id)).toMatchObject({ cutoff: 30, revision: 1 });
+    mailStore.getState().saveLens({ id, name: "Kids", policy: "School, childcare and classes" });
+    expect(inboxLenses(mailStore.getState()).find((l) => l.id === id)?.revision).toBe(2);
+    mailStore.getState().deleteLens(id);
+    s = mailStore.getState();
+    expect(inboxLenses(s).map((l) => l.id)).toEqual(["important"]);
+    expect(s.activeView).toBe("inbox");
   });
 });

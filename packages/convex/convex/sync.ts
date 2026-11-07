@@ -4,7 +4,8 @@ import { v } from "convex/values";
 import { deltaPage } from "@platform/engine-convex";
 import { query, mutation } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireAccount, requireAccounts, touchSession } from "./lib/auth";
+import { requireAccounts, touchSession } from "./lib/auth";
+import { hiddenThreadRow, mailReader, threadForId } from "./lib/privacy";
 import {
   publicAccount,
   publicClientState,
@@ -46,7 +47,8 @@ export const listThreads = query({
     since: v.optional(v.number()),
   },
   handler: async (ctx, { token, limit, since }) => {
-    const accounts = await requireAccounts(ctx, token, "mail.read");
+    const reader = await mailReader(ctx, token);
+    const { accounts } = reader;
     const take = Math.min(limit ?? DEFAULT_THREAD_LIMIT, MAX_THREAD_LIMIT);
 
     // One merged stream over every account in the session; each row carries
@@ -61,7 +63,8 @@ export const listThreads = query({
           .withIndex("by_account_last", (q) => q.eq("account_id", account._id))
           .order("desc")
           .take(take);
-        rows.push(...page.map(publicThread));
+        // A reader kept from private mail never learns those rows exist.
+        rows.push(...page.filter(reader.sees).map(publicThread));
       }
       const nextSince = rows.reduce((max, r) => Math.max(max, r.updated_at), 0);
       return { rows, nextSince, hasMore: false };
@@ -76,7 +79,9 @@ export const listThreads = query({
           range: (q, from) => q.eq("account_id", account._id).gt("updated_at", from),
           since,
           limit: take,
-          project: publicThread,
+          // On the delta stream a thread that turned private reaches such a
+          // reader as a bare tombstone, so a projection it kept drops it.
+          project: (row) => publicThread(reader.sees(row) ? row : hiddenThreadRow(row)),
         }),
       );
     }
@@ -121,8 +126,9 @@ export const listLabels = query({
 export const listDrafts = query({
   args: { token: v.optional(v.string()), since: v.optional(v.number()) },
   handler: async (ctx, { token, since }) => {
-    const accounts = await requireAccounts(ctx, token, "mail.read");
+    const reader = await mailReader(ctx, token);
     const out: ReturnType<typeof publicDraft>[] = [];
+    const accounts = reader.accounts;
     for (const account of accounts) {
       const rows = await ctx.db
         .query("drafts")
@@ -132,7 +138,15 @@ export const listDrafts = query({
             : q.eq("account_id", account._id).gt("updated_at", since),
         )
         .collect();
-      out.push(...rows.map(publicDraft));
+      for (const row of rows) {
+        // A reply or forward drafted in a thread the reader cannot see.
+        if (reader.hidesPrivate) {
+          const ref = row.thread_gmail_id ?? row.reply_to_gmail_id;
+          const thread = ref ? await threadForId(ctx, account._id, ref) : null;
+          if (thread && !reader.sees(thread)) continue;
+        }
+        out.push(publicDraft(row));
+      }
     }
     return out;
   },
@@ -141,7 +155,8 @@ export const listDrafts = query({
 export const getAccount = query({
   args: { token: v.optional(v.string()) },
   handler: async (ctx, { token }) => {
-    const accounts = await requireAccounts(ctx, token, "mail.read");
+    const reader = await mailReader(ctx, token);
+    const { accounts } = reader;
     if (accounts.length === 0) {
       // Signed in through Convex Auth with nothing connected yet — an
       // onboarding state, not a failure. The client shows the connect surface.
@@ -150,6 +165,7 @@ export const getAccount = query({
         accounts: [],
         client_state: null,
         outbound_pending: 0,
+        hides_private: reader.hidesPrivate,
       };
     }
     // Prefs belong to the user and follow them across devices. Fallback: a
@@ -189,8 +205,12 @@ export const getAccount = query({
       // `account` stays as the primary for callers that predate multi-account.
       account: publicAccount(accounts[0]),
       accounts: accounts.map(publicAccount),
-      client_state: publicClientState(state),
+      // The rules themselves say what the person keeps private, so a reader
+      // kept from private mail gets the prefs without them.
+      client_state: reader.hidesPrivate ? withoutPrivacyRules(publicClientState(state)) : publicClientState(state),
       outbound_pending: pending,
+      /** This login is kept from private mail (an agent terminal, an app). */
+      hides_private: reader.hidesPrivate,
     };
   },
 });
@@ -204,10 +224,12 @@ export const threadMessages = query({
   handler: async (ctx, { token, threadGmailId, accountId }) => {
     // With accountId (the thread row carries it) this is one indexed read;
     // without, fall back to scanning the session's accounts for the thread.
-    const accounts = accountId
-      ? [await requireAccount(ctx, token, accountId, "mail.read")]
-      : await requireAccounts(ctx, token, "mail.read");
-    for (const account of accounts) {
+    const reader = await mailReader(ctx, token, "mail.read", accountId);
+    for (const account of reader.accounts) {
+      if (reader.hidesPrivate) {
+        const thread = await threadForId(ctx, account._id, threadGmailId);
+        if (thread && !reader.sees(thread)) continue;
+      }
       const rows = await ctx.db
         .query("messages")
         .withIndex("by_account_thread", (q) =>
@@ -234,35 +256,12 @@ export const threadsByIds = query({
     gmailIds: v.array(v.string()),
   },
   handler: async (ctx, { token, gmailIds }) => {
-    const accounts = await requireAccounts(ctx, token, "mail.read");
+    const reader = await mailReader(ctx, token);
     const rows: ReturnType<typeof publicThread>[] = [];
     for (const gmailId of gmailIds.slice(0, 200)) {
-      for (const account of accounts) {
-        let thread = await ctx.db
-          .query("threads")
-          .withIndex("by_account_gmail", (q) =>
-            q.eq("account_id", account._id).eq("gmail_id", gmailId),
-          )
-          .unique();
-        if (!thread) {
-          const message = await ctx.db
-            .query("messages")
-            .withIndex("by_account_gmail", (q) =>
-              q.eq("account_id", account._id).eq("gmail_id", gmailId),
-            )
-            .unique();
-          if (message && !message.deleted) {
-            thread = await ctx.db
-              .query("threads")
-              .withIndex("by_account_gmail", (q) =>
-                q
-                  .eq("account_id", account._id)
-                  .eq("gmail_id", message.thread_gmail_id),
-              )
-              .unique();
-          }
-        }
-        if (thread && !thread.deleted) {
+      for (const account of reader.accounts) {
+        const thread = await threadForId(ctx, account._id, gmailId);
+        if (thread && !thread.deleted && reader.sees(thread)) {
           rows.push(publicThread(thread));
           break;
         }
@@ -302,3 +301,9 @@ export const refresh = mutation({
     return { scheduled: scheduled > 0 };
   },
 });
+
+function withoutPrivacyRules(state: ReturnType<typeof publicClientState>) {
+  if (!state?.prefs || typeof state.prefs !== "object") return state;
+  const { privacy_rules: _rules, ...prefs } = state.prefs as Record<string, unknown>;
+  return { ...state, prefs };
+}

@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 # Build the public tree (github.com/ashot/whisk) from this checkout plus the
 # platform packages Whisk builds against, vendored under platform/packages.
-# The destination is replaced wholesale except for its .git, so re-running
-# after changes here is a plain sync: review `git -C <dest> diff`, commit, push.
+# Whisk's own files come from the working tree, so uncommitted work counts, as
+# it does for every deploy; platform comes from its committed HEAD, the version
+# the deploys build against. The destination is replaced wholesale except for
+# its .git and node_modules. ./deploy.sh public runs this and pushes the result.
 #
-#   scripts/export-public.sh ../whisk-public
+#   scripts/export-public.sh ../whisk
+#   scripts/export-public.sh --packages     the platform packages it vendors
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 platform="${PLATFORM_ROOT:-$root/../platform}"
-dest="${1:?usage: scripts/export-public.sh <dest-dir>}"
 
 # The platform packages Whisk's package.json files name, and nothing else.
-packages="auth cli-kit crypto design desktop engine engine-convex keys push snippets"
+packages=$(cd "$root" && git ls-files -co --exclude-standard 'packages/*/package.json' | xargs grep -ho '"@platform/[a-z-]*"' | tr -d '"' | sed 's#@platform/##' | sort -u | tr '\n' ' ')
+[ "${1:-}" = "--packages" ] && { echo $packages; exit 0; }
+
+dest="${1:?usage: scripts/export-public.sh <dest-dir>}"
+if [ -d "$dest" ] && [ ! -d "$dest/.git" ] && [ -n "$(ls -A "$dest")" ]; then
+  echo "Refusing to export into $dest: it has files and is not a git checkout, and the export replaces its contents." >&2
+  exit 1
+fi
 
 # Private working notes and maintainer release scripts that need credentials
 # or platform's deploy engine, which the public tree does not carry.
@@ -22,11 +31,8 @@ trap 'rm -rf "$stage"' EXIT
 
 git -C "$root" ls-files -co --exclude-standard | grep -Ev "$exclude" | rsync -a --files-from=- "$root/" "$stage/"
 
-mkdir -p "$stage/platform/packages"
-cp "$platform/tsconfig.base.json" "$stage/platform/"
-for p in $packages; do
-  git -C "$platform" ls-files -co --exclude-standard "packages/$p" | rsync -a --files-from=- "$platform/" "$stage/platform/"
-done
+mkdir -p "$stage/platform"
+git -C "$platform" archive HEAD tsconfig.base.json $(for p in $packages; do echo "packages/$p"; done) | tar -x -C "$stage/platform"
 
 cat > "$stage/platform/README.md" <<'EOF'
 # platform

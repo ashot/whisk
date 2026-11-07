@@ -42,6 +42,10 @@ import {
   shownTopic,
   topicPile,
   threadDrafts,
+  inboxLenses,
+  viewLensId,
+  viewSlice,
+  isInboxList,
 } from "./selectors";
 import type { Pile } from "./selectors";
 import { MAIL_PLATFORM_CONFIG } from "./registry";
@@ -56,7 +60,7 @@ import type { CategoryId } from "../lib/categories";
 import { seedCompose } from "../lib/compose";
 import { fromAddress, isOwnAddress } from "../lib/sendAs";
 import { categoryMeta } from "../lib/categories";
-import { DEFAULT_IMPORTANCE_POLICY, importanceRevision, type ImportancePrefs } from "../lib/importance";
+import { IMPORTANT, MAX_LENSES, clampCutoff, inLens, newLensId, type Lens } from "../lib/lenses";
 
 export type Toast = {
   id: number;
@@ -141,6 +145,9 @@ export type MailState = {
   timePicker: "snooze" | "followup" | null;
   memoriesOpen: boolean;
   settingsOpen: boolean;
+  /** The panel under the inbox tabs: tuning the lens of the list on
+   *  screen, making a new one, or closed. */
+  lensPanel: "tune" | "new" | null;
   /** Cursor over the sweep's cards: the pile it is on, and where that was
    *  last seen, for when the pile vanishes (archived, merged away). */
   sweepIndex: number;
@@ -187,15 +194,17 @@ export type MailState = {
     account_id?: string;
     remember?: boolean;
   }) => void;
-  /** Mark threads important or not by hand; null hands them back to the
-   *  model. */
-  setImportance: (payload: {
+  /** Place threads in a lens, or out of it, by hand; null hands them back
+   *  to the model. */
+  setLensMark: (payload: {
     thread_gmail_ids: string[];
-    important: boolean | null;
+    lens_id: string;
+    belongs: boolean | null;
     account_id?: string;
   }) => void;
-  /** Save the importance policy; the server judges the recent inbox again. */
-  setImportancePolicy: (payload: { policy: string }) => void;
+  /** Create or edit a lens's name and description; the server scores the
+   *  recent inbox on it again. */
+  saveLens: (payload: { id: string; name: string; policy?: string }) => void;
   setReminder: (payload: {
     thread_gmail_id: string;
     kind: "snooze" | "followup";
@@ -271,6 +280,7 @@ export type MailState = {
   setTimePicker: (mode: "snooze" | "followup" | null) => void;
   setMemories: (open: boolean) => void;
   setSettings: (open: boolean) => void;
+  setLensPanel: (panel: "tune" | "new" | null) => void;
   setClusterPicker: (open: boolean) => void;
   setFilters: (open: boolean) => void;
   moveSweep: (delta: number) => void;
@@ -288,9 +298,16 @@ export type MailState = {
   applyLabelToggle: (labelGmailId: string, ids?: string[]) => void;
   undo: () => void;
   fileUnder: (category: CategoryId | null, ids?: string[]) => void;
-  /** The gesture: flip the cursor's (or selection's) threads between
-   *  Important and Other, or set them to `important`. */
-  markImportant: (important?: boolean, ids?: string[]) => void;
+  /** The gesture: put the cursor's (or selection's) threads in the lens
+   *  the list shows (Important on Other), or take them out; with no
+   *  `belongs`, flip the first row. */
+  markInLens: (belongs?: boolean, ids?: string[], lensId?: string) => void;
+  /** Slide a lens's cutoff: a local filter, saved as a pref. */
+  setLensCutoff: (id: string, cutoff: number) => void;
+  /** Remove a lens; its tab goes and the inbox lists stay. */
+  deleteLens: (id: string) => void;
+  /** Make a new lens and open its list. Returns its id. */
+  createLens: (name: string, policy: string) => string | null;
   snooze: (until: number, ids?: string[]) => void;
   watchReply: (until: number, ids?: string[]) => void;
   unRemind: (ids?: string[]) => void;
@@ -475,6 +492,7 @@ const creator = (set: any, get: any) => ({
   timePicker: null as "snooze" | "followup" | null,
   memoriesOpen: false,
   settingsOpen: false,
+  lensPanel: null as "tune" | "new" | null,
   sweepIndex: 0,
   sweepFocusId: null as string | null,
   clusterPickerOpen: false,
@@ -668,25 +686,37 @@ const creator = (set: any, get: any) => ({
     }
   }),
 
-  setImportance: action(function (
+  setLensMark: action(function (
     this: MailState,
-    payload: { thread_gmail_ids: string[]; important: boolean | null; account_id?: string },
+    payload: { thread_gmail_ids: string[]; lens_id: string; belongs: boolean | null; account_id?: string },
   ) {
     const targets = new Set(payload.thread_gmail_ids);
+    const now = Date.now();
     for (const id in this.threads) {
       const t = this.threads[id];
       if (!targets.has(t.gmail_id)) continue;
       if (payload.account_id && t.account_id !== payload.account_id) continue;
-      t.important = payload.important ?? undefined;
-      t.important_by = payload.important === null ? undefined : "user";
-      t.important_why = undefined;
+      const marks = { ...(t.lens_marks ?? {}) };
+      if (payload.belongs === null) delete marks[payload.lens_id];
+      else marks[payload.lens_id] = payload.belongs;
+      const any = Object.keys(marks).length > 0;
+      t.lens_marks = any ? marks : undefined;
+      t.marked_at = any ? now : undefined;
     }
   }),
 
-  setImportancePolicy: action(function (this: MailState, payload: { policy: string }) {
-    const prev = clientPref<ImportancePrefs>(this, "importance");
-    const policy = payload.policy.trim() === DEFAULT_IMPORTANCE_POLICY ? undefined : payload.policy.trim();
-    applyClientPref(this, "importance", { policy, revision: importanceRevision(prev) + 1 });
+  saveLens: action(function (this: MailState, payload: { id: string; name: string; policy?: string }) {
+    const lenses = inboxLenses(this);
+    const prev = lenses.find((l) => l.id === payload.id);
+    const policy = payload.policy?.trim() || undefined;
+    const next: Lens = {
+      id: payload.id,
+      name: payload.name.trim() || prev?.name || "View",
+      policy,
+      cutoff: prev?.cutoff ?? clampCutoff(undefined),
+      revision: (prev?.revision ?? 0) + (prev && (prev.policy ?? "") === (policy ?? "") ? 0 : 1),
+    };
+    applyClientPref(this, "lenses", prev ? lenses.map((l) => (l.id === next.id ? next : l)) : [...lenses, next]);
   }),
 
   setReminder: action(function (
@@ -873,6 +903,7 @@ const creator = (set: any, get: any) => ({
     set({
       activeView: view,
       navOpen: false,
+      ...(isInboxList(view) ? {} : { lensPanel: null }),
       lastNonSearchView: isSearch ? s.lastNonSearchView : view,
       openThreadId: null,
       selected: {},
@@ -1018,7 +1049,7 @@ const creator = (set: any, get: any) => ({
     if (!c || c.deleted) return;
     const hide = !c.hidden;
     get().setClusterTreatment({ cluster_id: c._id, hidden: hide, archive_new: false, account_id: c.account_id });
-    if (hide && s.activeView === "inbox") {
+    if (hide && isInboxList(s.activeView)) {
       const ids = topicPile(s.threads, s.clusters, s.accountScope, c._id)?.threads.map((t) => t._id) ?? [];
       const leaving = new Set(ids.concat(topicRowId(c._id)));
       if (s.focusedThreadId && leaving.has(s.focusedThreadId)) {
@@ -1157,6 +1188,7 @@ const creator = (set: any, get: any) => ({
   setTimePicker: (mode: "snooze" | "followup" | null) => set({ timePicker: mode }),
   setMemories: (open: boolean) => set({ memoriesOpen: open }),
   setSettings: (open: boolean) => set({ settingsOpen: open, ...(open ? { navOpen: false } : {}) }),
+  setLensPanel: (panel: "tune" | "new" | null) => set({ lensPanel: panel }),
   setSweepFocus: (id: string, index: number) => set({ sweepFocusId: id, sweepIndex: index }),
   setClusterPicker: (open: boolean) => set({ clusterPickerOpen: open }),
   setFilters: (open: boolean) => set({ filtersOpen: open }),
@@ -1339,25 +1371,57 @@ const creator = (set: any, get: any) => ({
     });
   },
 
-  markImportant: (important?: boolean, ids?: string[]) => {
+  markInLens: (belongs?: boolean, ids?: string[], lensId?: string) => {
     const s = get();
     const rows = rowsByIds(s, targetIds(s, ids));
     if (rows.length === 0) return;
-    // One verdict for the whole gesture: an explicit one, else the flip of
+    const lenses = inboxLenses(s);
+    const lens = lenses.find((l) => l.id === (lensId ?? viewLensId(s.activeView))) ?? lenses[0];
+    // One answer for the whole gesture: an explicit one, else the flip of
     // the first row, so a mixed selection lands in one place.
-    const next = important ?? rows[0].important === false;
-    const leaving = rows.filter((r) => (s.activeView === "inbox" && !next) || (s.activeView === "other" && next));
+    const next = belongs ?? !inLens(rows[0], lens);
+    const slice = viewSlice(s.activeView, lenses);
+    const leaving = slice ? rows.filter((r) => slice.has(r) && !slice.has({ ...r, lens_marks: { ...(r.lens_marks ?? {}), [lens.id]: next } })) : [];
     const focus = leaving.length > 0 ? nextFocusAfterRemoval(s, new Set(leaving.map((r) => r._id))) : s.focusedThreadId;
     const byAccount = new Map<string, string[]>();
     for (const r of rows) byAccount.set(r.account_id, [...(byAccount.get(r.account_id) ?? []), r.gmail_id]);
-    for (const [account_id, thread_gmail_ids] of byAccount) get().setImportance({ thread_gmail_ids, important: next, account_id });
+    for (const [account_id, thread_gmail_ids] of byAccount) get().setLensMark({ thread_gmail_ids, lens_id: lens.id, belongs: next, account_id });
     const n = rows.length === 1 ? "" : `${rows.length} `;
-    get().pushToast(next ? `Moved ${n}to Important` : `Moved ${n}to Other`);
+    const where = lens.id === IMPORTANT ? (next ? "Important" : "Other") : lens.name;
+    get().pushToast(next || lens.id === IMPORTANT ? `Moved ${n}to ${where}` : `Took ${n}out of ${where}`);
     set({
       selected: {},
       focusedThreadId: focus,
       ...(leaving.length > 0 && s.openThreadId && leaving.some((r) => r._id === s.openThreadId) ? { openThreadId: focus } : {}),
     });
+  },
+
+  setLensCutoff: (id: string, cutoff: number) => {
+    const lenses = inboxLenses(get());
+    get().setClientPref("lenses", lenses.map((l) => (l.id === id ? { ...l, cutoff: clampCutoff(cutoff) } : l)));
+  },
+
+  deleteLens: (id: string) => {
+    if (id === IMPORTANT) return;
+    const s = get();
+    const lens = inboxLenses(s).find((l) => l.id === id);
+    if (!lens) return;
+    s.setClientPref("lenses", inboxLenses(s).filter((l) => l.id !== id));
+    if (s.activeView === `lens:${id}`) s.setView("inbox");
+    s.pushToast(`Removed ${lens.name}`);
+  },
+
+  createLens: (name: string, policy: string) => {
+    const s = get();
+    if (inboxLenses(s).length >= MAX_LENSES) {
+      s.pushToast(`Keep it to ${MAX_LENSES} views`, "error");
+      return null;
+    }
+    const id = newLensId();
+    s.saveLens({ id, name, policy });
+    s.setView(`lens:${id}`);
+    set({ lensPanel: "tune" });
+    return id;
   },
 
   snooze: (until: number, ids?: string[]) => {

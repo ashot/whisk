@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalQuery } from "../_generated/server";
-import { requireAccount, requireAccounts } from "../lib/auth";
+import { mailReader, threadForId } from "../lib/privacy";
 import { DRAFT_FROM_THREAD } from "./draft";
 import type { Id } from "../_generated/dataModel";
 import { readableBody, transcriptOf } from "./mailText";
@@ -121,9 +121,8 @@ export const contextForSuggest = internalQuery({
     threadGmailId: v.string(),
   },
   handler: async (ctx, { token, accountId, threadGmailId }): Promise<SuggestContext> => {
-    const accounts = accountId
-      ? [await requireAccount(ctx, token, accountId, DRAFT_FROM_THREAD)]
-      : await requireAccounts(ctx, token, DRAFT_FROM_THREAD);
+    const reader = await mailReader(ctx, token, DRAFT_FROM_THREAD, accountId);
+    const accounts = reader.accounts;
 
     for (const account of accounts) {
       const thread = await ctx.db
@@ -132,7 +131,7 @@ export const contextForSuggest = internalQuery({
           q.eq("account_id", account._id).eq("gmail_id", threadGmailId),
         )
         .unique();
-      if (!thread || thread.deleted) continue;
+      if (!thread || thread.deleted || !reader.sees(thread)) continue;
 
       const rows = await ctx.db
         .query("messages")
@@ -178,6 +177,12 @@ export const contextForSuggest = internalQuery({
         if (m.deleted) continue;
         const mine = isOwnAddress(account, m.from.email) || m.label_ids.includes("SENT");
         if (!mine) continue;
+        // Sent mail is shown as examples of the person's voice; none of it
+        // may come from a thread the reader cannot see.
+        if (reader.hidesPrivate) {
+          const home = await threadForId(ctx, account._id, m.thread_gmail_id);
+          if (home && !reader.sees(home)) continue;
+        }
         const text = readableBody(m, 600);
         const key = normalizeForMatch(text);
         if (!text || seen.has(key)) continue;

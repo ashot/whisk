@@ -82,7 +82,7 @@ export const MAIL_PLATFORM_CONFIG: PlatformConfig = {
         inbox: "local_wins",
         clustering: "local_wins",
         send_from: "local_wins",
-        importance: "local_wins",
+        lenses: "local_wins",
       },
     },
   },
@@ -104,10 +104,10 @@ export const MAIL_PLATFORM_CONFIG: PlatformConfig = {
     "saveDraft",
     "deleteDraft",
     "applyThreadOps",
-    // A hand mark is the person's word and an example the model learns
-    // from; the policy save carries the policy itself.
-    "setImportance",
-    "setImportancePolicy",
+    // A hand placement is the person's word and an example the model
+    // learns from; a lens save carries the lens itself.
+    "setLensMark",
+    "saveLens",
   ]),
   // Draft autosaves are full-value LWW per draft — keep only the newest row
   // per draft in the durable queue.

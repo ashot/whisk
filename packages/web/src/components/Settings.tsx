@@ -22,7 +22,6 @@ import { ConnectedApps } from "./ConnectedApps";
 import { TopicSettings } from "./TopicSettings";
 import { CalendarSettings } from "./CalendarSettings";
 import { NotificationSettings } from "./NotificationSettings";
-import { ImportanceSettings } from "./Importance";
 
 // Everything about the person's session in one place: which mailboxes are
 // connected and whether each one is actually syncing, how to fix one that is
@@ -175,7 +174,6 @@ export function Settings(): React.ReactElement {
           </p>
         </section>
 
-        <ImportanceSettings />
         <NotificationSettings />
         <TopicSettings />
         <CalendarSettings />

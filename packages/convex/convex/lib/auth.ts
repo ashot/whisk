@@ -2,7 +2,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { Doc, Id } from "../_generated/dataModel";
 import { MutationCtx, QueryCtx } from "../_generated/server";
-import { appRowAllows, type ScopeNeed } from "./apps";
+import { appRowAllows, rowIsLimited, type ScopeNeed } from "./apps";
 
 // Every public query and mutation resolves its caller through this module.
 // Two credentials exist during the migration to Convex Auth (ct-44709):
@@ -55,7 +55,7 @@ export async function hashToken(token: string): Promise<string> {
 
 /** What a login row may carry besides its owner: a terminal's name, or a
  *  connected app and its scopes (connect.ts). */
-export type LoginFields = Pick<Doc<"auth_sessions">, "device_name" | "app_id" | "scopes">;
+export type LoginFields = Pick<Doc<"auth_sessions">, "device_name" | "app_id" | "scopes" | "hides_private">;
 
 /**
  * Create a login for a USER and return the raw token. The browser sign-in
@@ -278,14 +278,29 @@ export async function requireAccounts(
   token?: string,
   scope?: ScopeNeed,
 ): Promise<Doc<"accounts">[]> {
+  return (await resolveCaller(ctx, token, scope)).accounts;
+}
+
+/**
+ * The caller's accounts (as requireAccounts) and whether the caller is kept
+ * from private mail: a connected app or a terminal login for agents. The
+ * person's own sessions (Convex Auth, a full terminal) are not. lib/privacy
+ * builds every read and write gate on this.
+ */
+export async function resolveCaller(
+  ctx: ReadCtx,
+  token?: string,
+  scope?: ScopeNeed,
+): Promise<{ accounts: Doc<"accounts">[]; hidesPrivate: boolean }> {
   const callerId = await authUserId(ctx);
   if (callerId) {
     const owned = await accountsForUser(ctx, callerId);
-    if (owned.length > 0 || !token) return owned;
+    if (owned.length > 0 || !token) return { accounts: owned, hidesPrivate: false };
   }
   if (!token) throw new Error("Unauthorized: missing token");
   const sessions = await sessionsForToken(ctx, token, scope);
   if (sessions.length === 0) throw new Error("Unauthorized: unknown token");
+  const hidesPrivate = sessions.some(rowIsLimited);
 
   const userId = sessions.find((s) => s.user_id)?.user_id;
   if (userId) {
@@ -293,7 +308,7 @@ export async function requireAccounts(
     if (accounts.length === 0) {
       throw new Error("Unauthorized: account no longer exists");
     }
-    return accounts;
+    return { accounts, hidesPrivate };
   }
 
   // Legacy session rows: one per account, no user stamped yet.
@@ -307,7 +322,7 @@ export async function requireAccounts(
   if (accounts.length === 0) {
     throw new Error("Unauthorized: account no longer exists");
   }
-  return accounts;
+  return { accounts, hidesPrivate };
 }
 
 /** The user a token belongs to, or null for un-migrated legacy sessions. */
@@ -439,9 +454,9 @@ export async function attachAccountToSession(
       .withIndex("by_token_hash", (q) => q.eq("token_hash", tokenHash))
       .collect()
   )
-    // An app token never attaches a mailbox: that would let a connected app
-    // add Gmail accounts to the person's roster.
-    .filter((r) => !r.app_id)
+    // A limited login (an app, an agent terminal) never attaches a mailbox:
+    // that would let it add Gmail accounts to the person's roster.
+    .filter((r) => !rowIsLimited(r))
     .filter((r) => !r.ticket || now - r.created_at <= ATTACH_TICKET_TTL_MS);
   if (rows.length === 0) return false;
 

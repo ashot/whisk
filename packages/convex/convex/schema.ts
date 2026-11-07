@@ -152,6 +152,11 @@ export default defineSchema({
     // that names one of these scopes. Absent on terminal and browser logins.
     app_id: v.optional(v.string()),
     scopes: v.optional(v.array(v.string())),
+    // A terminal login for agents: it never sees private mail, reaches only
+    // functions that name a scope it holds (`scopes`, else every app scope),
+    // and so cannot change prefs, privacy rules or other logins. App logins
+    // hide private mail the same way without this flag.
+    hides_private: v.optional(v.boolean()),
   })
     .index("by_token_hash", ["token_hash"])
     .index("by_account", ["account_id"])
@@ -238,18 +243,34 @@ export default defineSchema({
     cluster_id: v.optional(v.id("clusters")),
     // "user": placed by hand (never moved by a regroup); "ai": the model.
     cluster_source: v.optional(v.union(v.literal("user"), v.literal("ai"))),
-    // Whether the inbox shows it first, judged against the person's
-    // importance policy. Absent = not judged yet, which the inbox shows.
+    // Lenses (@mail/shared/src/lib/lenses): per lens id, the model's 0-100
+    // score for how clearly the thread belongs, its few words on why, and
+    // the person's hand placement (final, and an example for the model).
+    lens_scores: v.optional(v.record(v.string(), v.number())),
+    lens_why: v.optional(v.record(v.string(), v.string())),
+    lens_marks: v.optional(v.record(v.string(), v.boolean())),
+    // When the person last placed it by hand: the judge reads the newest.
+    marked_at: v.optional(v.number()),
+    // Private mail (@mail/shared/src/lib/privacy): the person's hand mark
+    // (final), and the model's reading against their privacy rules: which
+    // rules it falls under, which rule wordings it was read against, at what
+    // message count, and why. Agents never see a thread that is private or
+    // not yet read (lib/privacy).
+    private_mark: v.optional(v.boolean()),
+    private_hits: v.optional(v.array(v.string())),
+    private_checked: v.optional(v.array(v.string())),
+    private_count: v.optional(v.number()),
+    private_why: v.optional(v.string()),
+    // The single-lens fields lenses replaced; migrations:lensesFromImportance
+    // moves them into the maps above. Remove once it has run everywhere.
     important: v.optional(v.boolean()),
-    // "user": marked by hand (final, and an example for the model); "ai".
     important_by: v.optional(v.union(v.literal("user"), v.literal("ai"))),
-    // The model's few words on why, shown beside the verdict.
     important_why: v.optional(v.string()),
     updated_at: v.number(),
     deleted: v.optional(v.boolean()),
   })
     .index("by_account_last", ["account_id", "last_at"])
-    .index("by_account_important_by", ["account_id", "important_by", "updated_at"])
+    .index("by_account_marked", ["account_id", "marked_at"])
     .index("by_account_updated", ["account_id", "updated_at"])
     .index("by_account_gmail", ["account_id", "gmail_id"])
     .index("by_account_client", ["account_id", "client_id"])
@@ -458,6 +479,9 @@ export default defineSchema({
     recent: v.array(
       v.object({ thread_gmail_id: v.string(), subject: v.string(), at: v.number() }),
     ),
+    // Saved by a login that cannot see private mail: it never acts on a
+    // thread such a login could not see.
+    hides_private: v.optional(v.boolean()),
     created_at: v.number(),
     updated_at: v.number(),
     deleted: v.optional(v.boolean()),

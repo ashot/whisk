@@ -31,7 +31,6 @@ export {
   makeOutboxFailureDisposition,
   defaultIsServerId,
   CommandReceiptRejectedError,
-  OutboxGaveUpError,
   DispatchNotWiredError,
   StaleDispatchBindingError,
   UnsupportedOutboxOperationSchemaError,

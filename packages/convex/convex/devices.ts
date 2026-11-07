@@ -7,7 +7,9 @@ import {
   requireUserId,
   requireViewerUserId,
   revokeOwnLogin,
+  rowsForToken,
 } from "./lib/auth";
+import { appScopeValidator, rowScopes } from "./lib/apps";
 
 // Device logins for terminals and agents. A device token is an ordinary
 // auth_sessions row — the same credential the web app used before Convex
@@ -21,11 +23,20 @@ export const mint = mutation({
     // sends none and resolves from ctx.auth.
     token: v.optional(v.string()),
     device_name: v.string(),
+    /** A login for agents: never sees private mail, cannot change prefs,
+     *  privacy rules or other logins. */
+    hides_private: v.optional(v.boolean()),
+    /** What an agent login may do; every app scope when absent. */
+    scopes: v.optional(v.array(appScopeValidator)),
   },
-  handler: async (ctx, { token, device_name }) => {
+  handler: async (ctx, { token, device_name, hides_private, scopes }) => {
+    // Only the person's own sessions mint: requireUserId names no scope, so
+    // an agent login cannot mint itself a wider one.
     const userId = await requireUserId(ctx, token);
+    if (scopes && !hides_private) throw new Error("Scopes apply to agent logins only");
     const minted = await createAuthSession(ctx, userId, {
       device_name: device_name.slice(0, 120),
+      ...(hides_private ? { hides_private: true, scopes } : {}),
     });
     const user = await ctx.db.get(userId);
     return {
@@ -53,14 +64,72 @@ export const list = query({
         created_at: r.created_at,
         last_seen_at: r.last_seen_at,
         current: mine !== null && r.token_hash === mine,
+        hides_private: !!r.hides_private,
+        scopes: r.hides_private ? rowScopes(r) : null,
       }));
+  },
+});
+
+/**
+ * This login itself, for any login, agents included (they cannot list the
+ * others): its id, name, and whether it is kept from private mail.
+ */
+export const self = query({
+  args: { token: v.string() },
+  handler: async (ctx, { token }) => {
+    const row = (await rowsForToken(ctx, token)).find((r) => !r.app_id);
+    if (!row) throw new Error("Unauthorized: unknown token");
+    return {
+      _id: row._id,
+      device_name: row.device_name ?? null,
+      hides_private: !!row.hides_private,
+      scopes: row.hides_private ? rowScopes(row) : null,
+    };
+  },
+});
+
+/**
+ * Change what a terminal login reaches: full (the person's own) or an agent
+ * login kept from private mail. The person's own sessions only, so an agent
+ * can never open private mail to itself.
+ */
+export const setAccess = mutation({
+  args: {
+    token: v.optional(v.string()),
+    session_id: v.id("auth_sessions"),
+    hides_private: v.boolean(),
+  },
+  handler: async (ctx, { token, session_id, hides_private }) => {
+    const userId = await requireUserId(ctx, token);
+    const row = await ctx.db.get(session_id);
+    if (!row || row.ticket || row.app_id || row.user_id !== userId) throw new Error("Device not found");
+    await ctx.db.patch(row._id, { hides_private: hides_private || undefined, scopes: hides_private ? row.scopes : undefined });
+    return { hides_private };
+  },
+});
+
+/**
+ * A terminal keeps itself from private mail from now on. Any login may
+ * narrow itself; widening again takes the person (setAccess, from the app).
+ */
+export const lock = mutation({
+  args: { token: v.string() },
+  handler: async (ctx, { token }) => {
+    const rows = (await rowsForToken(ctx, token)).filter((r) => !r.app_id);
+    if (rows.length === 0) throw new Error("Unauthorized: unknown token");
+    for (const row of rows) if (!row.hides_private) await ctx.db.patch(row._id, { hides_private: true });
+    return { hides_private: true };
   },
 });
 
 export const revoke = mutation({
   args: { token: v.optional(v.string()), session_id: v.id("auth_sessions") },
   handler: async (ctx, { token, session_id }) => {
-    await revokeOwnLogin(ctx, token, session_id, "device");
+    // Any login may end itself (an agent signing out); ending another takes
+    // the person.
+    const own = token ? (await rowsForToken(ctx, token)).find((r) => r._id === session_id && !r.app_id) : undefined;
+    if (own) await ctx.db.delete(own._id);
+    else await revokeOwnLogin(ctx, token, session_id, "device");
     return { revoked: true };
   },
 });

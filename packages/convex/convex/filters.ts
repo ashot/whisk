@@ -7,7 +7,8 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
-import { requireAccounts } from "./lib/auth";
+import { mailReader, privacyRulesForUser, seesId } from "./lib/privacy";
+import { threadPrivacy } from "@mail/shared/src/lib/privacy";
 import { sanitizeCategory } from "./lib/categorize";
 import { SYSTEM_LABEL_IDS, threadByGmailId } from "./lib/threads";
 import { modifyThreadLabels, schedulePump } from "./lib/outbound";
@@ -44,9 +45,9 @@ export const filterActionValidator = v.object({
 export const listFilters = query({
   args: { token: v.optional(v.string()), since: v.optional(v.number()) },
   handler: async (ctx, { token, since }) => {
-    const accounts = await requireAccounts(ctx, token, "mail.read");
+    const reader = await mailReader(ctx, token);
     const out = [];
-    for (const account of accounts) {
+    for (const account of reader.accounts) {
       const rows = await ctx.db
         .query("filters")
         .withIndex("by_account", (q) =>
@@ -55,7 +56,15 @@ export const listFilters = query({
             : q.eq("account_id", account._id).gt("updated_at", since),
         )
         .collect();
-      out.push(...rows);
+      for (const row of rows) {
+        // What a filter did lists subjects; a reader kept from private mail
+        // gets the entries it could see.
+        const recent = [];
+        for (const r of row.recent) {
+          if (await seesId(ctx, reader, account._id, r.thread_gmail_id)) recent.push(r);
+        }
+        out.push(recent.length === row.recent.length ? row : { ...row, recent });
+      }
     }
     return out;
   },
@@ -341,12 +350,18 @@ export const applyHits = internalMutation({
     const now = Date.now();
     let applied = 0;
     const touched = new Map<Id<"filters">, Doc<"filters">>();
+    let rules: Awaited<ReturnType<typeof privacyRulesForUser>> | null = null;
     for (const hit of hits) {
       const filter = touched.get(hit.filter_id) ?? (await ctx.db.get(hit.filter_id));
       if (!filter || filter.account_id !== accountId || filter.deleted || !filter.enabled || (filter.revision ?? 0) !== hit.revision) continue;
       const thread = await threadByGmailId(ctx, accountId, hit.thread_gmail_id);
       if (!thread || thread.deleted || thread.message_count !== hit.message_count || thread.last_at !== hit.last_at || thread.label_ids.includes("TRASH") || thread.label_ids.includes("SPAM")) continue;
       if (!includeOlder && (hit.inbound_at ?? thread.last_at) < filter.created_at) continue;
+      // An agent's filter acts only on mail its login could see.
+      if (filter.hides_private) {
+        rules ??= await privacyRulesForUser(ctx, account.user_id);
+        if (threadPrivacy(thread, rules) !== "open") continue;
+      }
       const previous = await ctx.db.query("filter_matches").withIndex("by_filter_thread", q => q.eq("filter_id", filter._id).eq("thread_gmail_id", thread.gmail_id)).unique();
       if (previous && previous.revision === hit.revision && previous.message_count === hit.message_count && previous.last_at === hit.last_at) continue;
       const mark = { account_id: accountId, filter_id: filter._id, thread_gmail_id: thread.gmail_id, revision: hit.revision, message_count: hit.message_count, last_at: hit.last_at, updated_at: now };

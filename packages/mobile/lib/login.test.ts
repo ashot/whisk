@@ -27,7 +27,10 @@ mock.module("expo-secure-store", () => ({
 
 const listeners = new Set<(s: string) => void>();
 const appState = { currentState: "active" as string };
+// bun shares module mocks across the files of one run, so this stands in
+// for everything the app's modules take from react-native, not just login's.
 mock.module("react-native", () => ({
+  Platform: { OS: "ios" },
   AppState: {
     get currentState() {
       return appState.currentState;

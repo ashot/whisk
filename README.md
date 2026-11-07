@@ -172,7 +172,10 @@ host the `packages/web` build anywhere static.
 
 Parts, in order: `convex` (determined-fox-931 and usable-leopard-98), `web`
 (the Pages project behind whisk.email, which the desktop app also loads),
-`desktop` (a notarized shell release) and `mobile` (an OTA update). Uncommitted
+`desktop` (a notarized shell release), `mobile` (an OTA update) and `public`
+(this tree exported by `scripts/export-public.sh` and pushed to
+github.com/ashot/whisk, after a clean install and a load of every CLI
+command). Uncommitted
 work counts and ships. The engine is platform's `scripts/deploy.sh`: it refuses
 a tree behind origin/main, builds against platform's committed HEAD, runs each
 part's checks first, and records what it deployed in `.git/deploy/`.

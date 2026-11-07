@@ -16,7 +16,10 @@ import {
   visibleThreads,
   viewTitle,
   isInboxList,
-  viewPart,
+  viewSlice,
+  inboxLenses,
+  viewLensId,
+  ALL_INBOX,
   LOOSE_SECTION,
   type InboxItem,
 } from "../store/selectors";
@@ -29,7 +32,7 @@ import type { Sender } from "@mail/shared/src/lib/sendAs";
 import { useCoarseNow } from "@mail/platform";
 import { HintPair } from "./KeyCap";
 import { DraftList } from "./DraftList";
-import { ImportanceSwitch } from "./Importance";
+import { LensPanel, LensTabs } from "./Lenses";
 import { TopicHead } from "./TopicHead";
 import { NavButton, SearchButton } from "./MobileNav";
 import { useNarrow } from "../lib/narrow";
@@ -59,6 +62,7 @@ function ClipIcon(): React.ReactElement {
 
 const EMPTY_LINES: Record<string, [string, string]> = {
   inbox: ["Nothing important.", "The rest is under Other. Press i to look."],
+  lens: ["Nothing in this view.", "Slide toward More in its panel to widen it."],
   other: ["Nothing else.", "Everything in the inbox is marked important."],
   starred: ["No stars.", "Press s on anything worth keeping close."],
   sent: ["Nothing sent yet.", "Press c to write your first."],
@@ -81,6 +85,8 @@ function EmptyState({ view }: { view: string }): React.ReactElement {
       ? "label"
       : view.startsWith("cat:")
         ? "cat"
+        : view.startsWith("lens:")
+          ? "lens"
         : view.startsWith("cluster:") && view !== `cluster:${LOOSE_SECTION}`
           ? "cluster"
           : view;
@@ -105,8 +111,11 @@ const ThreadRow = React.memo(function ThreadRow({
   reminder,
   topic,
   hue,
+  score,
 }: {
   t: Thread;
+  /** While a list is being tuned: this row's score on its lens. */
+  score?: number;
   /** The hue of the section the row sits in, when the inbox shows as
    *  topics: the row drops the lane chip and takes the section's colour. */
   hue?: number;
@@ -190,6 +199,7 @@ const ThreadRow = React.memo(function ThreadRow({
         <span className="row-snippet">{t.snippet}</span>
       </span>
       <span className="row-meta">
+        {score !== undefined && <span className="row-score" title="Its score on this list; the slider is the cutoff">{score}</span>}
         {reminder && (
           <span
             className="row-chip row-remind"
@@ -266,6 +276,7 @@ export function ThreadList(): React.ReactElement {
     // Whether the inbox shows as topics is a client preference; without
     // this dep the switch would not repaint until something else did.
     (s) => s.clientState,
+    (s) => s.lensPanel,
   ]);
   const now = useCoarseNow(30_000);
   const parentRef = useRef<HTMLDivElement>(null);
@@ -279,9 +290,11 @@ export function ThreadList(): React.ReactElement {
   // A topic's own page holds everything in it, streams included; the
   // loose page holds the mail no topic claimed.
   const root = viewRoot(view);
+  const lenses = inboxLenses(s);
+  const tuning = s.lensPanel === "tune" && isInboxList(view) ? viewLensId(view) : null;
   const threads = useMemo(
-    () => (root ? (root === LOOSE_SECTION ? loosePile(s.threads, s.clusters, s.accountScope) : topicPile(s.threads, s.clusters, s.accountScope, root))?.threads ?? [] : visibleThreads(s.threads, view, s.searchHits, s.accountScope, s.reminders, s.labels)),
-    [root, s.threads, s.clusters, view, s.searchHits, s.accountScope, s.reminders, s.labels],
+    () => (root ? (root === LOOSE_SECTION ? loosePile(s.threads, s.clusters, s.accountScope) : topicPile(s.threads, s.clusters, s.accountScope, root))?.threads ?? [] : visibleThreads(s.threads, view, s.searchHits, s.accountScope, s.reminders, s.labels, lenses)),
+    [root, s.threads, s.clusters, view, s.searchHits, s.accountScope, s.reminders, s.labels, lenses],
   );
   // The inbox as topics when the person asked for it, and a topic's own
   // page: the rows are then section heads, conversations, "N more" lines
@@ -292,8 +305,8 @@ export function ThreadList(): React.ReactElement {
   const inboxList = isInboxList(view);
   const grouped = !!root || (inboxList && grouping.grouped && hasTopics);
   const items: InboxItem[] = useMemo(
-    () => grouped ? inboxItems(s.threads, s.clusters, s.accountScope, root, viewPart(view)) : threads.map((t) => ({ kind: "thread", id: t._id, thread: t })),
-    [grouped, s.threads, s.clusters, s.accountScope, root, threads, view],
+    () => grouped ? inboxItems(s.threads, s.clusters, s.accountScope, root, viewSlice(view, lenses) ?? ALL_INBOX) : threads.map((t) => ({ kind: "thread", id: t._id, thread: t })),
+    [grouped, s.threads, s.clusters, s.accountScope, root, threads, view, lenses],
   );
   const groupingOff = (s.clientState.clustering ?? s.clientState.prefs?.clustering)?.enabled === false;
   const grouping_accounts = useMemo(() => (Object.values(s.accounts) as Account[]).filter((a) => a.clustering && inScope({ account_id: a._id }, s.accountScope)), [s.accounts, s.accountScope]);
@@ -382,7 +395,7 @@ export function ThreadList(): React.ReactElement {
       <header className="list-head">
         <NavButton />
         {inboxList ? (
-          <h1 className="list-title"><ImportanceSwitch view={view} /></h1>
+          <h1 className="list-title"><LensTabs view={view} /></h1>
         ) : (
           <h1 className="list-title">{viewTitle(view, view.startsWith("cluster:") ? s.clusters[view.slice(8)]?.name : labelName)}</h1>
         )}
@@ -400,6 +413,7 @@ export function ThreadList(): React.ReactElement {
         {inboxList && <GroupToggle grouped={grouping.grouped} ready={hasTopics} off={groupingOff} />}
         <SearchButton />
       </header>
+      {inboxList && <LensPanel view={view} />}
       {topicView && <TopicHead clusterId={topicView} threads={threads} />}
       {inboxList && grouping_accounts.length > 0 && (grouped || !hasTopics) && <div className="topic-head"><GroupingProgress accounts={grouping_accounts} many={grouping_accounts.length > 1} /></div>}
       {threads.length === 0 ? (
@@ -445,6 +459,7 @@ export function ThreadList(): React.ReactElement {
                       showCategory={showCategory}
                       reminder={reminderFor(reminders, item.thread)}
                       topic={topicOf(item.thread)}
+                      score={tuning ? (item.thread.lens_marks?.[tuning] !== undefined ? (item.thread.lens_marks[tuning] ? 100 : 0) : item.thread.lens_scores?.[tuning]) : undefined}
                     />
                   ) : item.kind === "section" ? (
                     <SectionRow item={item} focused={focused} mailbox={showAccountDots && item.pile.meta.cluster ? mailboxes.get(item.pile.meta.cluster.account_id) : undefined} />

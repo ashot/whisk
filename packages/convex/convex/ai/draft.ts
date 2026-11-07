@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalQuery } from "../_generated/server";
-import { requireAccount, requireAccounts } from "../lib/auth";
+import { mailReader } from "../lib/privacy";
 import type { ScopeNeed } from "../lib/apps";
 
 // Drafting in the owner's voice. The prompt is assembled from exactly three
@@ -20,9 +20,8 @@ export const contextForThread = internalQuery({
     threadGmailId: v.string(),
   },
   handler: async (ctx, { token, accountId, threadGmailId }) => {
-    const accounts = accountId
-      ? [await requireAccount(ctx, token, accountId, DRAFT_FROM_THREAD)]
-      : await requireAccounts(ctx, token, DRAFT_FROM_THREAD);
+    const reader = await mailReader(ctx, token, DRAFT_FROM_THREAD, accountId);
+    const accounts = reader.accounts;
 
     for (const account of accounts) {
       const thread = await ctx.db
@@ -31,7 +30,7 @@ export const contextForThread = internalQuery({
           q.eq("account_id", account._id).eq("gmail_id", threadGmailId),
         )
         .unique();
-      if (!thread || thread.deleted) continue;
+      if (!thread || thread.deleted || !reader.sees(thread)) continue;
 
       const rows = await ctx.db
         .query("messages")

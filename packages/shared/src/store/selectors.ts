@@ -11,6 +11,7 @@ import {
 } from "./types";
 import { CATEGORIES, type CategoryId, type CategoryMeta } from "../lib/categories";
 import { inHiddenTopic } from "../lib/notifications";
+import { DEFAULT_LENSES, IMPORTANT, inLens, lensesFromPrefs, type Lens } from "../lib/lenses";
 import { matchThread, parseQuery } from "../lib/searchQuery";
 export { inHiddenTopic };
 
@@ -30,37 +31,67 @@ function memoLast<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) =
 }
 
 
-/** Which slice of the inbox: what the person sees first, the rest, or both. */
-export type InboxPart = "important" | "other" | "all";
-
-/** `memoLast` once per inbox part, so the lists that read different parts
- *  in one render keep their own answers instead of trading one cache. */
-function memoPerPart<A extends unknown[], R>(fn: (...args: [...A, InboxPart]) => R): (...args: [...A, InboxPart?]) => R {
-  const memos = new Map<InboxPart, (...args: [...A, InboxPart]) => R>();
-  const arity = fn.length - 1;
-  return (...args) => {
-    // Positional: optional arguments before the part may be left off, so
-    // pad to the function's arity rather than trusting args.length.
-    const part = ((args[arity] as InboxPart | undefined) ?? "all");
-    const rest = Array.from({ length: arity }, (_, i) => args[i]) as unknown as A;
-    let memo = memos.get(part);
-    if (!memo) memos.set(part, (memo = memoLast(fn)));
-    return memo(...rest, part);
-  };
-}
-
 /** In Gmail's inbox, and not in trash or spam. */
 export function inGmailInbox(t: Thread): boolean {
   return !t.deleted && t.label_ids.includes(L.INBOX) && !t.label_ids.includes(L.TRASH) && !t.label_ids.includes(L.SPAM);
 }
 
-/** Whether an inbox thread sits in a part. Only a verdict of "not
- *  important" moves a thread to Other: mail the model has not judged yet
- *  shows first, so nothing is hidden before anything has read it. */
-export function inInboxPart(t: Thread, part: InboxPart): boolean {
-  if (!inGmailInbox(t)) return false;
-  if (part === "all") return true;
-  return (t.important === false) === (part === "other");
+/** A slice of the inbox a list shows: all of it, one lens, or Other (what
+ *  Important leaves out). Built per view and lens set, so caches keyed on a
+ *  slice recompute when a cutoff moves. */
+export type InboxSlice = { key: string; has: (t: Thread) => boolean };
+
+export const ALL_INBOX: InboxSlice = { key: "all", has: inGmailInbox };
+
+const slices = new Map<string, { lenses: readonly Lens[]; slice: InboxSlice }>();
+
+/** The slice a view lists, or null for views that are not inbox lists. */
+export function viewSlice(view: ViewId, lenses: readonly Lens[] = DEFAULT_LENSES): InboxSlice | null {
+  if (!isInboxList(view)) return null;
+  const hit = slices.get(view);
+  if (hit && hit.lenses === lenses) return hit.slice;
+  const important = lenses.find((l) => l.id === IMPORTANT) ?? DEFAULT_LENSES[0];
+  const lens = view === "inbox" ? important : view === "other" ? null : lenses.find((l) => l.id === view.slice("lens:".length));
+  const slice: InboxSlice = view === "other"
+    ? { key: view, has: (t) => inGmailInbox(t) && !inLens(t, important) }
+    : { key: view, has: lens ? (t) => inGmailInbox(t) && inLens(t, lens) : () => false };
+  slices.set(view, { lenses, slice });
+  return slice;
+}
+
+/** The inbox lists: Important (the "inbox" view), each lens, and Other. */
+export function isInboxList(view: ViewId): view is "inbox" | "other" | `lens:${string}` {
+  return view === "inbox" || view === "other" || view.startsWith("lens:");
+}
+
+/** The view a lens lists. */
+export function lensView(id: string): ViewId {
+  return id === IMPORTANT ? "inbox" : `lens:${id}`;
+}
+
+/** The lens a view's hand placements land on: a lens's own view, else
+ *  Important (Other is its complement). */
+export function viewLensId(view: ViewId): string {
+  return view.startsWith("lens:") ? view.slice("lens:".length) : IMPORTANT;
+}
+
+/** The person's lenses, Important first. */
+export const inboxLenses = (() => {
+  const read = memoLast((lenses: unknown, importance: unknown) => lensesFromPrefs({ lenses, importance: importance as never }));
+  return (state: { clientState: Record<string, any> }): Lens[] => read(clientPref(state, "lenses"), clientPref(state, "importance"));
+})();
+
+/** `memoLast` once per slice key, so lists that read different slices in
+ *  one render keep their own answers instead of trading one cache. */
+function memoPerSlice<R>(
+  fn: (all: Record<string, Thread>, clusters: Record<string, TopicCluster>, scope: AccountScope | undefined, slice: InboxSlice) => R,
+): (all: Record<string, Thread>, clusters: Record<string, TopicCluster>, scope?: AccountScope, slice?: InboxSlice) => R {
+  const memos = new Map<string, typeof fn>();
+  return (all, clusters, scope, slice = ALL_INBOX) => {
+    let memo = memos.get(slice.key);
+    if (!memo) memos.set(slice.key, (memo = memoLast(fn)));
+    return memo(all, clusters, scope, slice);
+  };
 }
 
 /** Whether a row belongs to the active account scope. Rows without an
@@ -81,11 +112,13 @@ export function threadInView(
   view: ViewId,
   /** Lets a search view answer label:<name>; ids work without it. */
   labels?: Record<string, Label>,
+  /** The person's lenses, which decide the inbox lists. */
+  lenses?: readonly Lens[],
 ): boolean {
   if (t.deleted) return false;
   const has = (id: string) => t.label_ids.includes(id);
-  if (view === "inbox") return inInboxPart(t, "important");
-  if (view === "other") return inInboxPart(t, "other");
+  const slice = viewSlice(view, lenses);
+  if (slice) return slice.has(t);
   if (view === "starred") return has(L.STARRED) && !has(L.TRASH) && !has(L.SPAM);
   if (view === "sent") return has(L.SENT) && !has(L.TRASH) && !has(L.SPAM);
   if (view === "trash") return has(L.TRASH);
@@ -169,6 +202,7 @@ export function visibleThreads(
   scope?: AccountScope,
   reminders?: Record<string, Reminder>,
   labels?: Record<string, Label>,
+  lenses?: readonly Lens[],
 ): Thread[] {
   // Later = parked behind an armed snooze; Waiting = a follow-up watch, armed
   // (still quiet) or fired (came due with no reply). Soonest due first — the
@@ -197,7 +231,7 @@ export function visibleThreads(
     const t = all[id];
     if (!inScope(t, scope)) continue;
     if (
-      threadInView(t, view, labels) ||
+      threadInView(t, view, labels, lenses) ||
       (hits !== null &&
         !t.deleted &&
         hits.has(t.gmail_id) &&
@@ -281,13 +315,13 @@ export type ThemeNode = { pile: Pile; streams: Pile[]; direct: Thread[] };
  * per cluster; a theme's own pile is the union. The screen shows one level:
  * the themes and the loose streams, side by side (`topLevel`).
  */
-export const topicTree = memoPerPart(function topicTree(
+export const topicTree = memoPerSlice(function topicTree(
   all: Record<string, Thread>,
   clusters: Record<string, TopicCluster>,
   scope: AccountScope | undefined,
-  part: InboxPart,
+  slice: InboxSlice,
 ): { themes: ThemeNode[]; loose: Pile[] } {
-  const piles = topicClusters(all, clusters, scope, part);
+  const piles = topicClusters(all, clusters, scope, slice);
   const byId = new Map(piles.map((p) => [p.meta.id, p]));
   const themes: ThemeNode[] = [];
   const inTheme = new Set<string>();
@@ -308,8 +342,8 @@ export const topicTree = memoPerPart(function topicTree(
 });
 
 /** The topics the screen shows: every theme, and every stream in no theme. */
-export function topLevel(all: Record<string, Thread>, clusters: Record<string, TopicCluster>, scope: AccountScope | undefined, part: InboxPart = "all"): Pile[] {
-  const tree = topicTree(all, clusters, scope, part);
+export function topLevel(all: Record<string, Thread>, clusters: Record<string, TopicCluster>, scope: AccountScope | undefined, slice: InboxSlice = ALL_INBOX): Pile[] {
+  const tree = topicTree(all, clusters, scope, slice);
   return [...tree.themes.map((n) => n.pile), ...tree.loose];
 }
 
@@ -341,9 +375,9 @@ export function topicMuted(c: TopicCluster | undefined, clusters: Record<string,
 }
 
 /** Inbox mail in scope that no topic claimed, newest first. */
-export function loosePile(all: Record<string, Thread>, clusters: Record<string, TopicCluster>, scope: AccountScope | undefined, part: InboxPart = "all"): Pile {
-  const claimed = new Set(topLevel(all, clusters, scope, part).flatMap((p) => p.threads.map((t) => t._id)));
-  const threads = sortThreads(Object.values(all).filter((t) => inScope(t, scope) && inInboxPart(t, part) && !claimed.has(t._id)));
+export function loosePile(all: Record<string, Thread>, clusters: Record<string, TopicCluster>, scope: AccountScope | undefined, slice: InboxSlice = ALL_INBOX): Pile {
+  const claimed = new Set(topLevel(all, clusters, scope, slice).flatMap((p) => p.threads.map((t) => t._id)));
+  const threads = sortThreads(Object.values(all).filter((t) => inScope(t, scope) && slice.has(t) && !claimed.has(t._id)));
   return tallyPile({ id: LOOSE_SECTION, name: "Everything else", hint: "Inbox conversations no topic claimed", hue: 0, view: `cluster:${LOOSE_SECTION}` }, threads);
 }
 
@@ -362,7 +396,7 @@ export const inboxItems = memoLast(function inboxItems(
   scope: AccountScope | undefined,
   root?: string,
   /** Which list is grouped; a topic's own page always holds all of it. */
-  part: InboxPart = "all",
+  slice: InboxSlice = ALL_INBOX,
 ): InboxItem[] {
   const out: InboxItem[] = [];
   if (root) {
@@ -371,8 +405,8 @@ export const inboxItems = memoLast(function inboxItems(
     return out;
   }
   const muted = (p: Pile) => topicMuted(p.meta.cluster, clusters);
-  const piles = topLevel(all, clusters, scope, part);
-  const loose = loosePile(all, clusters, scope, part);
+  const piles = topLevel(all, clusters, scope, slice);
+  const loose = loosePile(all, clusters, scope, slice);
   const section = (p: Pile, peek: number) => {
     const whole = p.threads.length <= peek + 1;
     const shown = whole ? p.threads : p.threads.slice(0, peek);
@@ -389,29 +423,25 @@ export const inboxItems = memoLast(function inboxItems(
   return out;
 });
 
-/** The two inbox lists: what the person sees first, and the rest. */
-export function isInboxList(view: ViewId): view is "inbox" | "other" {
-  return view === "inbox" || view === "other";
-}
-
-/** The inbox part a view lists, for grouping it as topics. */
-export function viewPart(view: ViewId): InboxPart {
-  return view === "inbox" ? "important" : view === "other" ? "other" : "all";
-}
-
-/** Threads per inbox list, with unread counts: the numbers on the switch
- *  between Important and Other. */
-export function inboxPartCounts(
+/** Unread and total per inbox list (Important, each lens, Other): the
+ *  numbers on the tabs. Keyed by each list's view id. */
+export function inboxListCounts(
   all: Record<string, Thread>,
-  scope?: AccountScope,
-): Record<"important" | "other", LaneCount> {
-  const out = { important: { total: 0, unread: 0 }, other: { total: 0, unread: 0 } };
+  scope: AccountScope | undefined,
+  lenses: readonly Lens[],
+): Map<ViewId, LaneCount> {
+  const views: ViewId[] = [...lenses.map((l) => lensView(l.id)), "other"];
+  const slicesFor = views.map((v) => viewSlice(v, lenses)!);
+  const out = new Map<ViewId, LaneCount>(views.map((v) => [v, { total: 0, unread: 0 }]));
   for (const id in all) {
     const t = all[id];
     if (!inScope(t, scope) || !inGmailInbox(t)) continue;
-    const entry = t.important === false ? out.other : out.important;
-    entry.total++;
-    if (t.is_unread) entry.unread++;
+    slicesFor.forEach((slice, i) => {
+      if (!slice.has(t)) return;
+      const entry = out.get(views[i])!;
+      entry.total++;
+      if (t.is_unread) entry.unread++;
+    });
   }
   return out;
 }
@@ -423,9 +453,9 @@ export function viewRoot(view: ViewId): string | undefined {
 
 /** The conversations a row stands for: a section's whole pile, or the one
  *  thread. So `e` on "Sentry Alerts" archives the whole topic. */
-export function rowThreadIds(s: { threads: Record<string, Thread>; clusters: Record<string, TopicCluster>; accountScope?: AccountScope; activeView: ViewId }, id: string): string[] {
+export function rowThreadIds(s: { threads: Record<string, Thread>; clusters: Record<string, TopicCluster>; accountScope?: AccountScope; activeView: ViewId; clientState?: Record<string, any> }, id: string): string[] {
   if (id.startsWith(TOPIC_ROW)) {
-    const item = inboxItems(s.threads, s.clusters, s.accountScope, viewRoot(s.activeView), viewPart(s.activeView)).find((i) => i.id === id);
+    const item = inboxItems(s.threads, s.clusters, s.accountScope, viewRoot(s.activeView), viewSlice(s.activeView, s.clientState ? inboxLenses({ clientState: s.clientState }) : undefined) ?? ALL_INBOX).find((i) => i.id === id);
     return item?.kind === "section" ? item.pile.threads.map((t) => t._id) : [];
   }
   return [id];
@@ -455,7 +485,7 @@ export function visibleRowIds(
   // too; the "N more" line and the muted footer are not.
   const root = viewRoot(s.activeView);
   if (s.clusters && s.clientState && (root || (isInboxList(s.activeView) && inboxGrouping({ clientState: s.clientState }).grouped))) {
-    return inboxItems(s.threads, s.clusters, s.accountScope, root, viewPart(s.activeView)).filter((i) => i.kind === "thread" || i.kind === "section").map((i) => i.id);
+    return inboxItems(s.threads, s.clusters, s.accountScope, root, viewSlice(s.activeView, inboxLenses({ clientState: s.clientState })) ?? ALL_INBOX).filter((i) => i.kind === "thread" || i.kind === "section").map((i) => i.id);
   }
   return visibleThreads(
     s.threads,
@@ -464,6 +494,7 @@ export function visibleRowIds(
     s.accountScope,
     s.reminders,
     s.labels,
+    s.clientState ? inboxLenses({ clientState: s.clientState }) : undefined,
   ).map((t) => t._id);
 }
 // ---------------------------------------------------------------------------
@@ -558,16 +589,16 @@ function tallyPile(meta: ClusterMeta, threads: Thread[]): Pile {
  * it is the person's. Unclustered inbox mail is not a pile — it is whatever
  * the topic view "none" lists.
  */
-export const topicClusters = memoPerPart(function topicClusters(
+export const topicClusters = memoPerSlice(function topicClusters(
   all: Record<string, Thread>,
   clusters: Record<string, TopicCluster>,
   scope: AccountScope | undefined,
-  part: InboxPart,
+  slice: InboxSlice,
 ): Pile[] {
   const byCluster = new Map<string, Thread[]>();
   for (const id in all) {
     const t = all[id];
-    if (!inScope(t, scope) || !inInboxPart(t, part) || !t.cluster_id) continue;
+    if (!inScope(t, scope) || !slice.has(t) || !t.cluster_id) continue;
     const list = byCluster.get(t.cluster_id) ?? [];
     list.push(t);
     byCluster.set(t.cluster_id, list);
@@ -634,11 +665,12 @@ export function inboxUnreadCount(
   all: Record<string, Thread>,
   scope?: AccountScope,
   clusters?: Record<string, TopicCluster>,
+  lenses?: readonly Lens[],
 ): number {
   let n = 0;
   for (const id in all) {
     const t = all[id];
-    if (t.is_unread && inScope(t, scope) && threadInView(t, "inbox") && !inHiddenTopic(t, clusters)) n++;
+    if (t.is_unread && inScope(t, scope) && threadInView(t, "inbox", undefined, lenses) && !inHiddenTopic(t, clusters)) n++;
   }
   return n;
 }
@@ -676,6 +708,7 @@ export function viewTitle(view: ViewId, labelName?: string): string {
   if (view.startsWith("label:")) return labelName ?? "Label";
   if (view === `cluster:${LOOSE_SECTION}`) return "Everything else";
   if (view.startsWith("cluster:")) return labelName ?? "Topic";
+  if (view.startsWith("lens:")) return labelName ?? "View";
   if (view.startsWith("search:")) return `“${view.slice("search:".length)}”`;
   if (view.startsWith("cat:")) {
     const lane = view.slice("cat:".length);
