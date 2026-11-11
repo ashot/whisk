@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useTracked } from "../store/mailStore";
 import {
   calendarPreferences,
+  meetingProvider,
   safeCalendarUrl,
 } from "@mail/shared/src/lib/calendar";
 import {
@@ -88,7 +89,7 @@ export function MeetingAlerts(): React.ReactElement | null {
           target="_blank"
           rel="noopener noreferrer"
         >
-          Join
+          Join {meetingProvider(join) ?? ""}
         </a>
       )}
       <button

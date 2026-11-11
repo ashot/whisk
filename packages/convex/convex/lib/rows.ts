@@ -1,6 +1,9 @@
 import { Doc } from "../_generated/dataModel";
 import { hasCalendarScope } from "../gmail/oauth";
 
+/** A re-score running longer than this died; its pulse comes down. */
+export const LENS_STALE_MS = 30 * 60 * 1000;
+
 // A session can hold several accounts, so every synced row keeps `account_id`
 // — it is how the client scopes views, sends, and markers per account. These
 // projections are the only shape any query returns.
@@ -47,6 +50,8 @@ export function publicAccount(row: Doc<"accounts">) {
     clustering: !!row.cluster_job,
     cluster_error: row.cluster_error,
     cluster_progress: row.cluster_progress,
+    // A lens re-score is booked or running (and not dead): the tabs pulse.
+    lens_sorting: !!row.lens_job && (!row.lens_started_at || row.lens_started_at > Date.now() - LENS_STALE_MS),
     // The client offers "turn on calendar" to an account that never granted
     // it, and never guesses from the provider alone. A demo mailbox has a
     // seeded calendar and nothing to grant.

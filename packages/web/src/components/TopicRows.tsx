@@ -18,21 +18,21 @@ export const SectionRow = React.memo(function SectionRow({ item, focused, mailbo
   const { pile } = item;
   const c = pile.meta.cluster;
   const total = pile.threads.length;
-  const [menu, setMenu] = useState<{ cluster: Cluster; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <div
       className={`row section-row${focused ? " is-focused" : ""}${pile.unread ? " is-unread" : ""}${c ? "" : " is-loose"}`}
       style={{ ["--hue" as any]: pile.meta.hue }}
-      title={c?.description ? `${c.description}. Enter opens it; e archives all of it; right-click hides it.` : c ? "Enter opens it; e archives all of it; right-click hides it." : pile.meta.hint}
+      title={c?.description ? `${c.description}. Enter opens it; e archives all of it.` : c ? "Enter opens it; e archives all of it." : pile.meta.hint}
       role="button"
       onClick={() => { st.focusThread(item.id); st.setView(pile.meta.view); }}
-      onContextMenu={c ? (e) => { e.preventDefault(); e.stopPropagation(); st.focusThread(item.id); setMenu({ cluster: c, x: e.clientX, y: e.clientY }); } : undefined}
+      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); st.focusThread(item.id); setMenu({ x: e.clientX, y: e.clientY }); }}
     >
       <span className="row-mark" aria-hidden />
       {mailbox && <span className="row-acct-dot" style={{ ["--acct" as any]: mailbox.color }} title={mailbox.email} aria-hidden />}
       <span className="section-name">{pile.meta.name}</span>
       <span className="section-count">{pile.unread ? `${pile.unread} new · ` : ""}{total}</span>
-      {menu && <TopicMenu cluster={menu.cluster} x={menu.x} y={menu.y} onClose={() => setMenu(null)} />}
+      {menu && <TopicMenu cluster={c} threadIds={pile.threads.map((t) => t._id)} x={menu.x} y={menu.y} onClose={() => setMenu(null)} />}
     </div>
   );
 });

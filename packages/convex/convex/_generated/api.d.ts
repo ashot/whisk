@@ -57,6 +57,7 @@ import type * as lib_privacy from "../lib/privacy.js";
 import type * as lib_pushPlan from "../lib/pushPlan.js";
 import type * as lib_rows from "../lib/rows.js";
 import type * as lib_threads from "../lib/threads.js";
+import type * as meetingPush from "../meetingPush.js";
 import type * as memories from "../memories.js";
 import type * as migrations from "../migrations.js";
 import type * as privacy from "../privacy.js";
@@ -121,6 +122,7 @@ declare const fullApi: ApiFromModules<{
   "lib/pushPlan": typeof lib_pushPlan;
   "lib/rows": typeof lib_rows;
   "lib/threads": typeof lib_threads;
+  meetingPush: typeof meetingPush;
   memories: typeof memories;
   migrations: typeof migrations;
   privacy: typeof privacy;

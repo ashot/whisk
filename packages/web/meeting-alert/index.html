@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Upcoming meeting · Whisk</title>
+    <script>
+      // The app's theme, before first paint (same origin, same key as the app).
+      try {
+        if (localStorage.getItem("mail:theme") === "dark") document.documentElement.dataset.theme = "dark";
+      } catch (e) {}
+    </script>
+    <script type="module" src="/src/meetingAlert/panel.ts"></script>
+  </head>
+  <body>
+    <main id="alerts" aria-live="assertive"></main>
+  </body>
+</html>

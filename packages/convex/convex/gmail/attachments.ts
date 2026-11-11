@@ -1,11 +1,15 @@
 import { v } from "convex/values";
-import { httpAction, internalQuery, mutation } from "../_generated/server";
+import { action, httpAction, internalQuery, mutation } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { accountsForUser, requireAccounts, rowsForToken, touchSession, userIdFromAuthJwt } from "../lib/auth";
 import { recordUse } from "../lib/actionAuth";
 import { mailReader, readerFor, seesId } from "../lib/privacy";
 import { allowedOrigins } from "./oauth";
-import { fetchAttachmentBytes, getAccessToken } from "./api";
+import { fetchAttachmentBytes, getAccessToken, getMessageHeaders } from "./api";
+
+// Reads of one message that only Gmail holds: an attachment's bytes, and the
+// message's full header list. messageContext resolves the caller to the
+// account that owns the message and applies its privacy rules.
 
 // GET /gmail/attachment — stream one attachment (or cid: inline image) to the
 // reader. The credential is the same bearer token the client already holds;
@@ -19,7 +23,7 @@ import { fetchAttachmentBytes, getAccessToken } from "./api";
 // mailbox, and a URL carrying it would land in a browser's history and in
 // logs. So an app token in the query string is refused.
 
-export const attachmentContext = internalQuery({
+export const messageContext = internalQuery({
   // Exactly one of the two credentials is set: `token` is a legacy opaque
   // token; `userId` was resolved by attachmentDownload from a VERIFIED
   // Convex Auth JWT (the <img> tag cannot send headers, so the JWT rides the
@@ -132,7 +136,7 @@ export const attachmentDownload = httpAction(async (ctx, request) => {
     // the legacy opaque-token path.
     const jwtUserId = await userIdFromAuthJwt(token);
     context = await ctx.runQuery(
-      internal.gmail.attachments.attachmentContext,
+      internal.gmail.attachments.messageContext,
       jwtUserId
         ? { userId: jwtUserId, messageGmailId: messageId }
         : { token, viaHeader: bearer !== "", messageGmailId: messageId },
@@ -159,6 +163,25 @@ export const attachmentDownload = httpAction(async (ctx, request) => {
   } catch {
     return new Response("Attachment fetch failed", { status: 502 });
   }
+});
+
+/** Every header on one message (Received, Delivered-To, List-Id, the
+ *  authentication results...), fetched from Gmail when the reader asks. Only
+ *  the address headers are synced; the rest are read on demand. */
+export const messageHeaders = action({
+  args: { token: v.optional(v.string()), messageGmailId: v.string() },
+  handler: async (ctx, { token, messageGmailId }): Promise<Array<{ name: string; value: string }>> => {
+    const context = await ctx.runQuery(internal.gmail.attachments.messageContext, {
+      token,
+      viaHeader: true,
+      messageGmailId,
+    });
+    await recordUse(ctx, token);
+    if (!context) throw new Error("Message not found");
+    if (context.provider !== "gmail") throw new Error("This account has no message headers to fetch");
+    const accessToken = await getAccessToken(ctx, context.accountId);
+    return await getMessageHeaders(accessToken, messageGmailId);
+  },
 });
 
 // Files going the other way. A client uploads bytes to a short-lived URL,

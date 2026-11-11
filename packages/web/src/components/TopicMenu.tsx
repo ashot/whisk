@@ -1,58 +1,26 @@
-import React, { useEffect, useLayoutEffect, useRef } from "react";
-import { createPortal } from "react-dom";
+import React from "react";
 import { useMailStore } from "../store/mailStore";
 import type { Cluster } from "../store/types";
 import { KeyCap } from "./KeyCap";
-import "../design/topics.css";
+import { PopMenu } from "./PopMenu";
+import { LensMenuItems } from "./Lenses";
 
-/** Right-click on a topic at the top of the inbox: hide it, or unhide it.
- *  The mail stays where it is. */
-export function TopicMenu({ cluster, x, y, onClose }: { cluster: Cluster; x: number; y: number; onClose: () => void }): React.ReactElement {
-  const ref = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    el.style.left = `${Math.max(8, Math.min(x, window.innerWidth - r.width - 8))}px`;
-    el.style.top = `${Math.max(8, Math.min(y, window.innerHeight - r.height - 8))}px`;
-  }, [x, y]);
-  useEffect(() => {
-    const close = () => onClose();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("pointerdown", close);
-    window.addEventListener("keydown", onKey, true);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      window.removeEventListener("pointerdown", close);
-      window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [onClose]);
-  const hidden = !!cluster.hidden;
-  return createPortal(
-    <div
-      ref={ref}
-      className="topic-menu"
-      role="menu"
-      style={{ left: x, top: y }}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <button
-        role="menuitem"
-        autoFocus
-        onClick={() => { onClose(); useMailStore.getState().hideTopic(cluster._id); }}
-      >
-        {hidden ? "Unhide" : "Hide"}
-        <KeyCap spec="h" />
-      </button>
-    </div>,
-    document.body,
+/** Right-click on a topic (or the section of mail no topic claimed): hide
+ *  or unhide it, and place all of its inbox mail in the views. */
+export function TopicMenu({ cluster, x, y, onClose, threadIds }: { cluster?: Cluster; x: number; y: number; onClose: () => void; threadIds?: string[] }): React.ReactElement {
+  return (
+    <PopMenu x={x} y={y} onClose={onClose}>
+      {cluster && (
+        <button
+          role="menuitem"
+          autoFocus
+          onClick={() => { onClose(); useMailStore.getState().hideTopic(cluster._id); }}
+        >
+          {cluster.hidden ? "Unhide" : "Hide"}
+          <KeyCap spec="h" />
+        </button>
+      )}
+      {threadIds && threadIds.length > 0 && <LensMenuItems ids={threadIds} onDone={onClose} />}
+    </PopMenu>
   );
 }

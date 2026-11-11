@@ -38,9 +38,13 @@ function SlidersIcon(): React.ReactElement {
 /** The inbox's lists as the list's title: Important, each lens, Other,
  *  and the two controls that shape them (tune this one, make another). */
 export function LensTabs({ view }: { view: ViewId }): React.ReactElement {
-  const s = useTracked([(s) => s.clientState, (s) => s.lensPanel]);
+  const s = useTracked([(s) => s.clientState, (s) => s.lensPanel, (s) => s.accounts, (s) => s.accountScope]);
   const lenses = inboxLenses(s);
+  const [over, setOver] = useState<ViewId | null>(null);
   const tabs: Array<{ view: ViewId; name: string }> = [...lenses.map((l) => ({ view: lensView(l.id), name: l.name })), { view: "other", name: "Other" }];
+  const sorting = Object.values(s.accounts).some((a) => a.lens_sorting && inScope({ account_id: a._id }, s.accountScope));
+  // Mail dropped on a tab belongs in that list: Other is out of Important.
+  const accepts = (e: React.DragEvent, target: ViewId) => target !== view && e.dataTransfer.types.includes(MAIL_DRAG);
   return (
     <span className="lens-tabs" role="tablist" aria-label="Inbox lists">
       {tabs.map((t) => (
@@ -48,8 +52,22 @@ export function LensTabs({ view }: { view: ViewId }): React.ReactElement {
           key={t.view}
           role="tab"
           aria-selected={t.view === view}
-          className="lens-tab"
+          className={`lens-tab${over === t.view ? " is-drop" : ""}`}
           onClick={() => (t.view === view ? st().setLensPanel(s.lensPanel === "tune" ? null : "tune") : st().setView(t.view))}
+          onDragOver={(e) => {
+            if (!accepts(e, t.view)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            setOver(t.view);
+          }}
+          onDragLeave={() => setOver((o) => (o === t.view ? null : o))}
+          onDrop={(e) => {
+            setOver(null);
+            const ids = droppedMail(e);
+            if (!ids || !accepts(e, t.view)) return;
+            e.preventDefault();
+            placeMail(ids, t.view);
+          }}
         >
           {t.name}
         </button>
@@ -74,7 +92,85 @@ export function LensTabs({ view }: { view: ViewId }): React.ReactElement {
           </button>
         )}
       </span>
+      {sorting && (
+        <span className="lens-sorting" title="Scoring the inbox again with the mail you placed by hand as examples">
+          <span className="spin" aria-hidden /> sorting
+        </span>
+      )}
     </span>
+  );
+}
+
+/** Put mail in an inbox list: Important or a view, or Other (out of
+ *  Important). A hand placement, final for those threads; the rest of the
+ *  inbox is scored again with it as an example. */
+export function placeMail(ids: string[], target: ViewId, belongs = true): void {
+  if (target === "other") st().markInLens(!belongs, ids, IMPORTANT);
+  else st().markInLens(belongs, ids, viewLensId(target));
+}
+
+const MAIL_DRAG = "application/x-whisk-threads";
+
+/** Start dragging conversations: the tabs take the drop. Several show as a
+ *  count, so the drag says how much it carries. */
+export function startMailDrag(e: React.DragEvent, ids: string[]): void {
+  e.dataTransfer.setData(MAIL_DRAG, JSON.stringify(ids));
+  e.dataTransfer.effectAllowed = "move";
+  if (ids.length > 1) {
+    const ghost = document.createElement("div");
+    ghost.className = "mail-drag-ghost";
+    ghost.textContent = `${ids.length} conversations`;
+    document.body.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, 12, 12);
+    setTimeout(() => ghost.remove(), 0);
+  }
+  // A virtual row can scroll away mid-drag and never see its dragend, so
+  // the page clears the dragging state on any end.
+  document.body.classList.add("is-dragging-mail");
+  const end = () => document.body.classList.remove("is-dragging-mail");
+  window.addEventListener("dragend", end, { once: true, capture: true });
+  window.addEventListener("drop", end, { once: true, capture: true });
+}
+
+function droppedMail(e: React.DragEvent): string[] | null {
+  try {
+    const ids = JSON.parse(e.dataTransfer.getData(MAIL_DRAG));
+    return Array.isArray(ids) && ids.every((id) => typeof id === "string") ? ids : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Menu items that place conversations in the inbox lists: Important or
+ *  Other, then each view. A check marks where all of them sit now, a dash a
+ *  mixed set. */
+export function LensMenuItems({ ids, onDone }: { ids: string[]; onDone: () => void }): React.ReactElement | null {
+  const s = useTracked([(s) => s.clientState, (s) => s.threads]);
+  const threads = ids.map((id) => s.threads[id]).filter((t): t is Thread => !!t && inGmailInbox(t));
+  if (threads.length === 0) return null;
+  const lenses = inboxLenses(s);
+  const share = (lens: Lens) => threads.filter((t) => inLens(t, lens)).length / threads.length;
+  const mark = (part: number) => (part === 1 ? "✓" : part > 0 ? "–" : "");
+  const act = (target: ViewId, belongs: boolean) => () => { onDone(); placeMail(threads.map((t) => t._id), target, belongs); };
+  const important = share(lenses[0]);
+  const item = (label: string, part: number, run: () => void, first = false) => (
+    <button key={label} role="menuitemcheckbox" aria-checked={part === 1 ? true : part > 0 ? "mixed" : false} autoFocus={first} onClick={run}>
+      <span className="menu-check" aria-hidden>{mark(part)}</span>
+      <span className="menu-label">{label}</span>
+    </button>
+  );
+  return (
+    <>
+      <div className="menu-sep" role="separator" />
+      {threads.length > 1 && <div className="menu-head">{threads.length} conversations</div>}
+      {item("Important", important, act("inbox", true), true)}
+      {item("Other", 1 - important, act("other", true))}
+      {lenses.length > 1 && <div className="menu-sep" role="separator" />}
+      {lenses.slice(1).map((l) => {
+        const part = share(l);
+        return item(l.name, part, act(lensView(l.id), part < 1));
+      })}
+    </>
   );
 }
 

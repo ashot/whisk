@@ -171,5 +171,29 @@ export function newContent(text: string): string {
     if (isForwardHeader(line)) break;
     kept.push(line);
   }
-  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return withoutSignOff(kept.join("\n").replace(/\n{3,}/g, "\n\n").trim());
+}
+
+const CLOSING_RE =
+  /^(?:(?:many |kind |best |warm |warmest )?(?:thanks|thank you|regards|wishes)(?: (?:and|&) (?:best |kind )?regards)?(?: so much| again)?|best|cheers|sincerely|warmly|yours(?: truly)?|talk soon|sent from my .+)[\s,.!]*$/i;
+
+/** The message without a closing ("Thanks,", "Thank You and Regards") and
+ *  the name lines under it, or a "Sent from my iPhone". A message that is
+ *  nothing but a closing keeps it: then the closing is what it says. */
+function withoutSignOff(text: string): string {
+  const lines = text.split("\n");
+  let end = lines.length;
+  while (end > 0 && !lines[end - 1].trim()) end--;
+  for (let i = end - 1; i >= Math.max(1, end - 3); i--) {
+    const line = lines[i].trim();
+    if (!CLOSING_RE.test(line)) {
+      // Under a closing sit at most two short name lines.
+      if (line.length > 40) break;
+      continue;
+    }
+    const rest = lines.slice(0, i).join("\n").trim();
+    // A typed "Thanks, Ada" often sits over a saved signature.
+    return rest ? withoutSignOff(rest) : text;
+  }
+  return text;
 }

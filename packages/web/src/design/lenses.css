@@ -283,3 +283,73 @@
   font-variant-numeric: tabular-nums;
   color: var(--m-ink-faint);
 }
+
+/* Placing mail in the views from a menu: a check column, then the list. */
+.topic-menu .menu-check {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--m-accent);
+  font-size: 12px;
+  text-align: center;
+}
+
+.topic-menu .menu-label {
+  flex: 1;
+}
+
+.topic-menu button[role="menuitemcheckbox"] {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--m-rule);
+}
+
+.menu-sep:first-child {
+  display: none;
+}
+
+.menu-head {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  color: var(--m-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* While mail is dragged the tabs read as places to drop it; the one under
+   the pointer lights up. */
+.is-dragging-mail .lens-tab:not([aria-selected="true"]) {
+  outline: 1px dashed var(--m-rule-strong);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+.lens-tab.is-drop {
+  color: var(--m-ink);
+  background: var(--m-accent-soft);
+  outline-color: var(--m-accent);
+}
+
+.mail-drag-ghost {
+  position: fixed;
+  top: -100px;
+  left: 0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--m-accent);
+  color: var(--m-accent-ink);
+  font: 500 12px var(--font-ui);
+}
+
+.lens-sorting {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--m-ink-muted);
+}

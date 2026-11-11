@@ -91,6 +91,50 @@ describe("lens scores", () => {
   });
 });
 
+describe("re-scoring after hand placements", () => {
+  test("placements book one whole-inbox pass, pushed back by each new one; placements during a pass book the next", async () => {
+    const { t, token, accountId } = await seeded();
+    // Jobs book but never fire: no model call, and nothing lands in the next file.
+    const realTimeout = globalThis.setTimeout;
+    const realKey = process.env.ANTHROPIC_API_KEY;
+    globalThis.setTimeout = (() => 0) as unknown as typeof setTimeout;
+    process.env.ANTHROPIC_API_KEY = "test";
+    try {
+      const account = () => t.run(async (ctx) => (await ctx.db.get(accountId))!);
+      const job = (id: Doc<"accounts">["lens_job"]) => t.run(async (ctx) => (id ? await ctx.db.system.get(id) : null));
+      const mark = (lens_id: string) => dispatch(t, token, "setLensMark", [{ thread_gmail_ids: [DEBATE], lens_id, belongs: true, account_id: accountId }]);
+
+      await mark(IMPORTANT);
+      const first = await account();
+      expect(first.lens_pending).toEqual([IMPORTANT]);
+      expect((await job(first.lens_job))?.state.kind).toBe("pending");
+
+      await mark("kids");
+      const second = await account();
+      expect(second.lens_pending).toEqual([IMPORTANT, "kids"]);
+      expect(second.lens_job).not.toBe(first.lens_job);
+      expect((await job(first.lens_job))?.state.kind).toBe("canceled");
+
+      expect(await t.mutation(internal.lenses.startRescore, { accountId })).toEqual([IMPORTANT, "kids"]);
+      expect((await account()).lens_pending).toBeUndefined();
+      await t.mutation(internal.lenses.finishRescore, { accountId });
+      expect((await account()).lens_job).toBeUndefined();
+
+      await mark("kids");
+      await t.mutation(internal.lenses.startRescore, { accountId });
+      await mark(IMPORTANT);
+      await t.mutation(internal.lenses.finishRescore, { accountId });
+      const after = await account();
+      expect(after.lens_pending).toEqual([IMPORTANT]);
+      expect((await job(after.lens_job))?.state.kind).toBe("pending");
+    } finally {
+      globalThis.setTimeout = realTimeout;
+      if (realKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = realKey;
+    }
+  });
+});
+
 describe("the lens judge's input and verdict", () => {
   test("lens ids are renamed for the model and mapped back", () => {
     const input = JSON.parse(lensInput({ owner: "me@x.org", lenses: [{ id: IMPORTANT, name: "Important", policy: "p" }, { id: "kids", name: "Kids", policy: "k" }], corrections: [{ from: "a", subject: "s", lens: "kids", belongs: true }], rows: [] }));

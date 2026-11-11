@@ -7,6 +7,7 @@ import { drainDeltaPages } from "@mail/shared/src/store/deltaPages";
 import { mailStore } from "@mail/shared/src/store/mailStore";
 import { MAIL_PLATFORM_CONFIG } from "@mail/shared/src/store/registry";
 import { setRemoteSearch, type RemoteSearchPage } from "@mail/shared/src/store/searchBridge";
+import { setHeadersFetcher } from "@mail/shared/src/store/headersBridge";
 import { setPlatformEnv } from "@mail/shared/src/env";
 import { convexClient } from "./convex";
 import { sqliteKV } from "./kv";
@@ -119,6 +120,13 @@ export function boot(): void {
       cursor: cursor ?? undefined,
     })) as RemoteSearchPage;
   });
+
+  setHeadersFetcher(async (messageGmailId) =>
+    await convexClient().action(api.gmail.attachments.messageHeaders, {
+      token: mailStore.getState().authToken ?? undefined,
+      messageGmailId,
+    }),
+  );
 }
 
 export function useMailSync(): void {

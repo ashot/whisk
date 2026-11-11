@@ -1,10 +1,11 @@
-// New mail reaches the phone here. The server decides what is worth a push
-// (the same rules as the desktop banner); this file registers the phone,
-// shows the banner unless the thread is already on screen, fetches the mail a
-// push names as soon as it hears of it, opens that thread on a tap, and keeps
-// the icon badge equal to the inbox the person set.
+// New mail and meetings reach the phone here. The server decides what is
+// worth a push (the same rules as the desktop); this file registers the
+// phone, shows the banner unless the thread is already on screen, fetches the
+// mail a push names as soon as it hears of it, opens that thread on a tap (or
+// joins the meeting a meeting push names), and keeps the icon badge equal to
+// the inbox the person set.
 import { useEffect, useState } from "react";
-import { AppState, Platform } from "react-native";
+import { AppState, Linking, Platform } from "react-native";
 import * as Notifications from "expo-notifications";
 import * as Device from "expo-device";
 import Constants from "expo-constants";
@@ -18,7 +19,7 @@ import { refreshSync } from "./auth";
 import { openThreadScreen } from "./openThread";
 import { loadThreadMessages, nameThread, storedToken } from "./sync";
 
-export type MailPush = { kind?: string; thread_id?: string; thread_gmail_id?: string; account_id?: string };
+export type MailPush = { kind?: string; thread_id?: string; thread_gmail_id?: string; account_id?: string; join?: string };
 const dataOf = (n: Notifications.Notification): MailPush => (n.request.content.data ?? {}) as MailPush;
 
 /** The mail a background push names. iOS hands the task the raw APNs
@@ -59,6 +60,14 @@ async function register(authToken: string): Promise<void> {
   if (!Device.isDevice) return; // the simulator has no push token
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync("mail", { name: "New mail", importance: Notifications.AndroidImportance.HIGH });
+    // A meeting about to start is the one thing worth the loudest slot.
+    await Notifications.setNotificationChannelAsync("meetings", {
+      name: "Meetings",
+      importance: Notifications.AndroidImportance.MAX,
+      sound: "meeting-push.wav",
+      vibrationPattern: [0, 250, 120, 250],
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    });
   }
   let { status } = await Notifications.getPermissionsAsync();
   if (status !== "granted") ({ status } = await Notifications.requestPermissionsAsync());
@@ -146,6 +155,11 @@ export function warm(data: MailPush): Promise<void> {
 /** A tap: leave whatever was open and show the mail the push was about. */
 export function open(data: MailPush): void {
   if (!mailStore.getState().authToken) return; // signed out: the welcome screen stays
+  // A meeting push joins the meeting; with no link the app opening is enough.
+  if (data.kind === "meeting") {
+    if (data.join && /^https?:\/\//i.test(data.join)) void Linking.openURL(data.join);
+    return;
+  }
   if (router.canDismiss()) router.dismissAll();
   if (!data.thread_id) return; // a digest opens the inbox
   void warm(data);
@@ -166,16 +180,10 @@ export function usePushNotifications(): void {
     const app = AppState.addEventListener("change", (next) => {
       if (next === "active") register(authToken).catch((e) => console.warn("[push] registration failed", e));
     });
-    const sub = Notifications.addPushTokenListener((t) => {
-      registered = t.data;
-      convexClient()
-        .mutation(api.devices.registerPush, {
-          token: authToken,
-          push_token: t.data,
-          platform: Platform.OS === "android" ? "android" : "ios",
-          time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        })
-        .catch((e) => console.warn("[push] token update failed", e));
+    // The listener reports the native device token, which Expo cannot send
+    // to; a rotation is the cue to fetch and register the Expo token again.
+    const sub = Notifications.addPushTokenListener(() => {
+      register(authToken).catch((e) => console.warn("[push] token update failed", e));
     });
     return () => {
       app.remove();

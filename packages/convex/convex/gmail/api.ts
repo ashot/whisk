@@ -657,6 +657,15 @@ export async function getMessage(accessToken: string, messageId: string) {
   );
 }
 
+/** Every header on one message, in the order the message carries them. */
+export async function getMessageHeaders(accessToken: string, messageId: string) {
+  const message = await call<{ payload?: { headers?: Array<{ name: string; value: string }> } }>(
+    accessToken,
+    `/messages/${messageId}${queryString({ format: "metadata" })}`,
+  );
+  return message.payload?.headers ?? [];
+}
+
 export async function getAttachmentData(
   accessToken: string,
   messageId: string,

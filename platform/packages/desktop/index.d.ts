@@ -159,7 +159,9 @@ export interface DesktopAppApi {
   /** Push one of `ipc.events` to every window. */
   emit(name: string, payload?: unknown): void;
   /** A window on the shell's preload for the app's own page (a file or a URL). Returns the BrowserWindow. */
-  openWindow(opts: { file?: string; url?: string; width?: number; height?: number; minWidth?: number; minHeight?: number; resizable?: boolean; titleBarStyle?: string; backgroundColor?: string; parent?: unknown; args?: string[] }): unknown;
+  openWindow(opts: { file?: string; url?: string; /** A path on the site the app loads ("/alert/"). */ path?: string; /** Extra BrowserWindow options (frame, alwaysOnTop, x, y…). */ window?: Record<string, unknown>; /** Show without taking focus. */ showInactive?: boolean; width?: number; height?: number; minWidth?: number; minHeight?: number; resizable?: boolean; titleBarStyle?: string; backgroundColor?: string; parent?: unknown; args?: string[] }): unknown;
+  /** A detached tab window on one of the app's paths. With `key`, the window already open under it is focused instead of a second one opening. */
+  openTabWindow(path: string, opts?: { key?: string }): { window: unknown; created: boolean } | null;
   /** Rebuild the tray and app menus so `visible` on app items is read again. */
   refreshMenus(): void;
 }
@@ -347,8 +349,9 @@ export const updaterLogic: {
 
 // ── Build ──────────────────────────────────────────────────────────────────
 
-export const NOTARIZE_ENV: { keychainProfile: "NOTARIZE_KEYCHAIN_PROFILE"; appleId: "APPLE_ID"; applePassword: "APPLE_PASSWORD"; appleTeamId: "APPLE_TEAM_ID" };
+export const NOTARIZE_ENV: { apiKey: "APPLE_API_KEY"; apiKeyId: "APPLE_API_KEY_ID"; apiIssuer: "APPLE_API_ISSUER"; keychainProfile: "NOTARIZE_KEYCHAIN_PROFILE"; appleId: "APPLE_ID"; applePassword: "APPLE_PASSWORD"; appleTeamId: "APPLE_TEAM_ID" };
 export function notarizeCredentials(env?: Record<string, string | undefined>):
+  | { kind: "apiKey"; appleApiKey: string; appleApiKeyId: string; appleApiIssuer: string }
   | { kind: "keychainProfile"; keychainProfile: string }
   | { kind: "appleId"; appleId: string; appleIdPassword: string; teamId?: string }
   | null;

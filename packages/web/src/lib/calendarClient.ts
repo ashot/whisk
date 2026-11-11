@@ -36,10 +36,13 @@ export function calendarWrite(
   });
 }
 
-export function calendarWriteMessage(accountId: string): string {
+export function calendarWriteMessage(
+  accountId: string,
+  what: "Event" | "Reply" = "Event",
+): string {
   return mailStore.getState().accounts[accountId]?.provider === "demo"
-    ? "Event saved"
-    : "Event queued for Google Calendar";
+    ? `${what} saved`
+    : `${what} queued for Google Calendar`;
 }
 
 export function calendarError(error: unknown): string {

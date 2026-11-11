@@ -4,6 +4,7 @@ import {
   calendarKey,
   calendarPreferences,
   calendarVisible,
+  conflictingEvents,
   defaultEventTime,
   eventDuration,
   eventsForDay,
@@ -11,7 +12,9 @@ import {
   freeSlots,
   localDayKey,
   localDayStart,
+  locationLabel,
   safeCalendarUrl,
+  utcDayStamp,
   writableCalendar,
 } from "@mail/shared/src/lib/calendar";
 import type {
@@ -49,6 +52,7 @@ export function Calendar(): React.ReactElement {
   const returnFocus = useRef<HTMLElement | null>(null);
   const newButton = useRef<HTMLButtonElement>(null);
   const feed = useRef<HTMLDivElement>(null);
+  const dateInput = useRef<HTMLInputElement>(null);
   const minimum = addCalendarDays(today, -13);
   const maximum = addCalendarDays(today, 60);
   const preferences = calendarPreferences(state.clientState.calendar);
@@ -104,6 +108,21 @@ export function Calendar(): React.ReactElement {
   const days = Array.from({ length: count }, (_, index) =>
     addCalendarDays(anchor, index),
   ).filter((day) => day <= maximum);
+  // Runs of empty days within a month fold into one quiet row.
+  const blocks: Array<string[] & { empty: boolean }> = [];
+  for (const day of days) {
+    const empty =
+      day !== today && !eventsForDay(shownEvents, day).length;
+    const last = blocks.at(-1);
+    if (
+      empty &&
+      last &&
+      last.empty &&
+      last[0].slice(0, 7) === day.slice(0, 7)
+    )
+      last.push(day);
+    else blocks.push(Object.assign([day], { empty }));
+  }
   const selected = state.calendarOpenId
     ? state.events[state.calendarOpenId]
     : undefined;
@@ -181,7 +200,8 @@ export function Calendar(): React.ReactElement {
     const day = payload.all_day
       ? new Date(payload.start).toISOString().slice(0, 10)
       : localDayKey(payload.start);
-    navigate(day);
+    // Stay put when the saved event is already on screen.
+    if (day < anchor || day > days.at(-1)!) navigate(day);
   };
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -267,55 +287,81 @@ export function Calendar(): React.ReactElement {
       setRetrying(false);
     }
   };
-  const month = new Intl.DateTimeFormat(undefined, {
-    month: "long",
-    year: "numeric",
-  }).format(localDayStart(anchor));
+  const zone = Intl.DateTimeFormat()
+    .resolvedOptions()
+    .timeZone.replaceAll("_", " ");
+  const monthOf = (day: string, year = true) =>
+    new Intl.DateTimeFormat(undefined, {
+      month: "long",
+      ...(year ? { year: "numeric" } : {}),
+    }).format(localDayStart(day));
+  const clock = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
+  const open = (event: CalendarEvent) => {
+    rememberFocus();
+    mailStore.getState().setCalendarState({ calendarOpenId: event._id });
+  };
   return (
     <div className="calendar-view">
       <header className="calendar-header">
         <NavButton />
-        <div>
-          <span className="calendar-eyebrow">Your time, together</span>
-          <h1>
-            Calendar <span>{month}</span>
-          </h1>
-        </div>
+        <h1>{monthOf(anchor)}</h1>
         <div className="calendar-header-actions">
-          <button
-            className="calendar-button"
-            title="Today (t)"
-            onClick={() => navigate(today)}
-          >
-            Today
-          </button>
-          <button
-            className="calendar-icon-button"
-            aria-label="Previous day"
-            disabled={anchor <= minimum}
-            onClick={() => navigate(addCalendarDays(anchor, -1))}
-          >
-            ‹
-          </button>
-          <button
-            className="calendar-icon-button"
-            aria-label="Next day"
-            disabled={anchor >= maximum}
-            onClick={() => navigate(addCalendarDays(anchor, 1))}
-          >
-            ›
-          </button>
-          <label className="calendar-date-jump">
-            <span className="calendar-sr">Jump to date</span>
+          <div className="calendar-stepper" role="group" aria-label="Days">
+            <button
+              className="calendar-icon-button"
+              aria-label="Previous day"
+              title="Previous day ([)"
+              disabled={anchor <= minimum}
+              onClick={() => navigate(addCalendarDays(anchor, -1))}
+            >
+              <Chevron left />
+            </button>
+            <button
+              className={`calendar-button${anchor === today ? " is-current" : ""}`}
+              title="Today (t)"
+              onClick={() => navigate(today)}
+            >
+              Today
+            </button>
+            <button
+              className="calendar-icon-button"
+              aria-label="Next day"
+              title="Next day (])"
+              disabled={anchor >= maximum}
+              onClick={() => navigate(addCalendarDays(anchor, 1))}
+            >
+              <Chevron />
+            </button>
+          </div>
+          <span className="calendar-date-jump">
+            <button
+              className="calendar-icon-button"
+              aria-label="Go to date"
+              title="Go to date"
+              onClick={() => {
+                try {
+                  dateInput.current?.showPicker();
+                } catch {
+                  dateInput.current?.focus();
+                }
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden>
+                <rect x="4" y="5.5" width="16" height="14" rx="2" />
+                <path d="M4 10h16M8.5 3.5v4M15.5 3.5v4" />
+              </svg>
+            </button>
             <input
+              ref={dateInput}
               type="date"
-              aria-label="Jump to date"
+              tabIndex={-1}
+              aria-hidden
               min={minimum}
               max={maximum}
               value={anchor}
-              onChange={(e) => navigate(e.target.value)}
+              onChange={(e) => e.target.value && navigate(e.target.value)}
             />
-          </label>
+          </span>
           <button
             ref={newButton}
             className="calendar-button is-primary"
@@ -327,27 +373,11 @@ export function Calendar(): React.ReactElement {
             }
             onClick={() => create()}
           >
-            + New event
+            New event
           </button>
         </div>
       </header>
       <div className="calendar-toolbar">
-        <span>
-          Timeline <i aria-hidden>·</i>{" "}
-          {Intl.DateTimeFormat()
-            .resolvedOptions()
-            .timeZone.replaceAll("_", " ")}
-        </span>
-        {syncIssue && (
-          <span
-            className="calendar-sync-issue"
-            role="status"
-            title={syncIssueDetail}
-          >
-            <i className="calendar-dot" aria-hidden />
-            {syncIssue}
-          </span>
-        )}
         <details
           className="calendar-sources"
           onKeyDown={(e) => {
@@ -357,13 +387,39 @@ export function Calendar(): React.ReactElement {
             }
           }}
         >
-          <summary>
-            {visible.length} of {calendars.length} calendars{" "}
-            <span aria-hidden>⌄</span>
+          <summary
+            aria-label={`${visible.length} of ${calendars.length} calendars shown`}
+          >
+            {visible.length ? (
+              visible.slice(0, 4).map((calendar) => (
+                <span className="calendar-source-chip" key={calendar._id}>
+                  <i
+                    className="calendar-dot"
+                    style={{
+                      backgroundColor: calendar.color || "var(--m-accent)",
+                    }}
+                  />
+                  {calendar.summary}
+                </span>
+              ))
+            ) : (
+              <span className="calendar-source-chip">No calendars shown</span>
+            )}
+            {visible.length > 4 && (
+              <span className="calendar-source-chip">
+                +{visible.length - 4}
+              </span>
+            )}
+            {visible.length < calendars.length && visible.length > 0 && (
+              <span className="calendar-source-hidden">
+                {calendars.length - visible.length} hidden
+              </span>
+            )}
+            <Chevron down />
           </summary>
           <div className="calendar-source-menu">
             <header>
-              <strong>All accounts, one timeline</strong>
+              <strong>Calendars</strong>
               <div>
                 <button onClick={() => setHidden([])}>Show all</button>
                 <button
@@ -379,43 +435,65 @@ export function Calendar(): React.ReactElement {
                 </button>
               </div>
             </header>
-            {accounts.map((account) => (
-              <section key={account._id}>
-                <h3>{account.email}</h3>
-                {calendars
-                  .filter((calendar) => calendar.account_id === account._id)
-                  .map((calendar) => (
-                    <label key={calendar._id}>
-                      <input
-                        type="checkbox"
-                        checked={calendarVisible(calendar, preferences)}
-                        onChange={() => toggleCalendar(calendar)}
-                      />
-                      <i
-                        className="calendar-dot"
-                        style={{
-                          backgroundColor: calendar.color || "var(--m-accent)",
-                        }}
-                      />
-                      <span>{calendar.summary}</span>
-                      {!writableCalendar(calendar) && <small>Read-only</small>}
-                    </label>
-                  ))}
-              </section>
-            ))}
-            <p>Calendar visibility is separate from your inbox selection.</p>
+            {accounts
+              .filter((account) =>
+                calendars.some(
+                  (calendar) => calendar.account_id === account._id,
+                ),
+              )
+              .map((account) => (
+                <section key={account._id}>
+                  <h3>{account.email}</h3>
+                  {calendars
+                    .filter((calendar) => calendar.account_id === account._id)
+                    .map((calendar) => (
+                      <label key={calendar._id}>
+                        <input
+                          type="checkbox"
+                          checked={calendarVisible(calendar, preferences)}
+                          onChange={() => toggleCalendar(calendar)}
+                        />
+                        <i
+                          className="calendar-dot"
+                          style={{
+                            backgroundColor:
+                              calendar.color || "var(--m-accent)",
+                          }}
+                        />
+                        <span>{calendar.summary}</span>
+                        {!writableCalendar(calendar) && (
+                          <small>Read-only</small>
+                        )}
+                      </label>
+                    ))}
+                </section>
+              ))}
           </div>
         </details>
+        {syncIssue && (
+          <span
+            className="calendar-sync-issue"
+            role="status"
+            title={syncIssueDetail}
+          >
+            <i className="calendar-dot" aria-hidden />
+            {syncIssue}
+          </span>
+        )}
+        <span className="calendar-zone" title="Times are shown in this zone">
+          {zone}
+        </span>
         <button
           className="calendar-refresh"
           disabled={retrying}
+          aria-label={syncIssue ? "Retry calendar sync" : "Refresh calendars"}
           onClick={() => {
             if (syncIssue) {
               void retry();
               return;
             }
             void refreshSync();
-            mailStore.getState().pushToast("Calendar refresh requested");
+            mailStore.getState().pushToast("Refreshing calendar");
           }}
           title={syncIssue ? syncIssueDetail : "Refresh calendars"}
         >
@@ -429,11 +507,8 @@ export function Calendar(): React.ReactElement {
         .map((account) => (
           <div className="calendar-connect" key={account._id}>
             <div>
-              <strong>Bring {account.email} into your day</strong>
-              <p>
-                Connect Google Calendar to see and create events alongside your
-                other accounts.
-              </p>
+              <strong>{account.email}</strong>
+              <p>Calendar not connected</p>
             </div>
             <button
               className="calendar-button"
@@ -450,30 +525,104 @@ export function Calendar(): React.ReactElement {
         aria-busy={!state.calendarReady}
       >
         {!state.calendarReady && !calendars.length ? (
-          <div className="calendar-empty">
-            <h2>Getting your days in order…</h2>
-            <p>Your calendars will appear here as they sync.</p>
+          <div className="calendar-empty is-loading" aria-hidden>
+            {[0, 1, 2].map((index) => (
+              <div className="calendar-skeleton" key={index}>
+                <span />
+                <div>
+                  <i />
+                  <i />
+                </div>
+              </div>
+            ))}
           </div>
         ) : !calendars.length ? (
           <div className="calendar-empty">
-            <h2>A little space for your day.</h2>
-            <p>Connect a calendar above to bring your schedule into Whisk.</p>
+            <h2>No calendars yet</h2>
+            <p>Connect a Google account above to see its events here.</p>
           </div>
         ) : !visible.length ? (
           <div className="calendar-empty">
-            <h2>Your calendars are hidden.</h2>
-            <p>Choose which calendars to show, or bring them all back.</p>
+            <h2>Every calendar is hidden</h2>
             <button className="calendar-button" onClick={() => setHidden([])}>
               Show all calendars
             </button>
           </div>
         ) : (
-          days.map((day) => {
+          blocks.map((block, blockIndex) => {
+            const day = block[0];
+            const previous = blocks[blockIndex - 1]?.at(-1);
+            const newMonth =
+              !!previous && day.slice(0, 7) !== previous.slice(0, 7);
+            const monthHeading = newMonth && (
+              <h2 className="calendar-month">
+                {monthOf(day, day.slice(0, 4) !== today.slice(0, 4))}
+              </h2>
+            );
+            if (block.length > 1) {
+              const last = block.at(-1)!;
+              const short = (key: string) =>
+                new Intl.DateTimeFormat(undefined, {
+                  weekday: "short",
+                }).format(localDayStart(key));
+              return (
+                <React.Fragment key={day}>
+                  {monthHeading}
+                  <section
+                    className={`calendar-day is-quiet${day < today ? " is-past" : ""}`}
+                    aria-label={`${new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(localDayStart(day))} to ${new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(localDayStart(last))}`}
+                  >
+                    <header className="calendar-day-heading">
+                      <strong>
+                        {Number(day.slice(8))}–{Number(last.slice(8))}
+                      </strong>
+                    </header>
+                    <div className="calendar-day-body">
+                      {writable.length ? (
+                        <button
+                          className="calendar-gap"
+                          aria-label={`New event on ${day}`}
+                          onClick={() => create(day)}
+                        >
+                          <span className="calendar-gap-free">
+                            {short(day)} – {short(last)} · nothing scheduled
+                          </span>
+                          <span className="calendar-gap-add">+ New event</span>
+                        </button>
+                      ) : (
+                        <p className="calendar-day-empty">
+                          {short(day)} – {short(last)} · nothing scheduled
+                        </p>
+                      )}
+                    </div>
+                  </section>
+                </React.Fragment>
+              );
+            }
             const rows = eventsForDay(shownEvents, day);
+            const clashes = conflictingEvents(shownEvents, day);
             const gaps = writable.length
               ? freeSlots(shownEvents, day, now)
               : [];
-            const entries = [
+            const isToday = day === today;
+            // Today's now line falls between events. While something is
+            // happening, that event's own "Now" tag marks the present.
+            const nowAt =
+              isToday &&
+              !rows.some(
+                (row) =>
+                  !row.all_day &&
+                  row.start <= now &&
+                  row.end > now &&
+                  row.my_response !== "declined",
+              )
+                ? now
+                : null;
+            type Entry =
+              | { start: number; row: CalendarEvent }
+              | { start: number; gap: { start: number; end: number } }
+              | { start: number; now: true };
+            const entries: Entry[] = [
               ...rows.map((row) => ({
                 start: row.all_day
                   ? -Infinity
@@ -481,148 +630,221 @@ export function Calendar(): React.ReactElement {
                 row,
               })),
               ...gaps.map((gap) => ({ start: gap.start, gap })),
+              ...(nowAt === null
+                ? []
+                : [{ start: nowAt - 0.5, now: true as const }]),
             ].sort((a, b) => a.start - b.start);
-            const isToday = day === today;
             const date = new Date(localDayStart(day));
+            const weekend = date.getDay() === 0 || date.getDay() === 6;
+            const weekday = new Intl.DateTimeFormat(undefined, {
+              weekday: "short",
+            }).format(date);
             return (
-              <section
-                className={`calendar-day${isToday ? " is-today" : ""}`}
-                key={day}
-                aria-label={new Intl.DateTimeFormat(undefined, {
-                  dateStyle: "full",
-                }).format(date)}
-              >
-                <header className="calendar-day-heading">
-                  <span>
-                    {isToday
-                      ? "Today"
-                      : day === addCalendarDays(today, 1)
-                        ? "Tomorrow"
-                        : new Intl.DateTimeFormat(undefined, {
-                            weekday: "short",
-                          }).format(date)}
-                  </span>
-                  <strong>{date.getDate()}</strong>
-                  <small>
-                    {new Intl.DateTimeFormat(undefined, {
-                      month: "short",
-                    }).format(date)}
-                  </small>
-                </header>
-                <div className="calendar-day-body">
-                  {!rows.length && (
-                    <p className="calendar-day-empty">
-                      No plans yet
-                      {day === today ? ". Make room for something good." : "."}
-                    </p>
-                  )}
-                  {entries.map((entry, index) => {
-                    if ("gap" in entry)
+              <React.Fragment key={day}>
+                {monthHeading}
+                <section
+                  className={`calendar-day${isToday ? " is-today" : ""}${day < today ? " is-past" : ""}${weekend ? " is-weekend" : ""}`}
+                  aria-label={new Intl.DateTimeFormat(undefined, {
+                    dateStyle: "full",
+                  }).format(date)}
+                >
+                  <header className="calendar-day-heading">
+                    <strong>{date.getDate()}</strong>
+                    <span>
+                      {isToday ? (
+                        "Today"
+                      ) : day === addCalendarDays(today, 1) ? (
+                        <>
+                          <span className="calendar-wide">Tomorrow</span>
+                          <span className="calendar-narrow">{weekday}</span>
+                        </>
+                      ) : (
+                        weekday
+                      )}
+                    </span>
+                  </header>
+                  <div className="calendar-day-body">
+                    {!rows.length && !gaps.length && (
+                      <p className="calendar-day-empty">Nothing scheduled</p>
+                    )}
+                    {entries.map((entry, index) => {
+                      if ("now" in entry)
+                        return (
+                          <div
+                            key="now"
+                            className="calendar-now-line"
+                            role="separator"
+                            aria-label={`Now, ${clock.format(now)}`}
+                          >
+                            <span>{clock.format(now)}</span>
+                          </div>
+                        );
+                      if ("gap" in entry)
+                        return (
+                          <button
+                            key={`gap-${index}`}
+                            className="calendar-gap"
+                            aria-label={`New event on ${day} at ${clock.format(entry.gap.start)}, ${eventDuration(entry.gap)} free`}
+                            onClick={() => create(day, entry.gap)}
+                          >
+                            <span className="calendar-event-time">
+                              {clock.format(entry.gap.start)}
+                            </span>
+                            <span className="calendar-gap-free">
+                              {eventDuration(entry.gap)} free
+                            </span>
+                            <span className="calendar-gap-add">
+                              + New event
+                            </span>
+                          </button>
+                        );
+                      const event = entry.row;
+                      const calendar = calendarMap.get(
+                        calendarKey(event.account_id, event.calendar_google_id),
+                      )!;
+                      const join = safeCalendarUrl(event.conference_url);
+                      const declined = event.my_response === "declined";
+                      const live =
+                        !event.all_day &&
+                        event.start <= now &&
+                        event.end > now &&
+                        !declined;
+                      const past = event.all_day
+                        ? day < today
+                        : event.end <= now;
+                      const span = event.all_day
+                        ? Math.round((event.end - event.start) / 86_400_000)
+                        : 1;
+                      const dayOfSpan = event.all_day
+                        ? Math.round(
+                            (utcDayStamp(day) - event.start) / 86_400_000,
+                          ) + 1
+                        : 1;
+                      const fromBefore =
+                        !event.all_day && event.start < localDayStart(day);
+                      const tags = [
+                        clashes.has(event._id) && !past && "Conflict",
+                        fromBefore && "Continues",
+                      ].filter(Boolean);
+                      const response =
+                        event.my_response === "needsAction"
+                          ? "Reply needed"
+                          : event.my_response === "tentative"
+                            ? "Maybe"
+                            : declined
+                              ? "Declined"
+                              : null;
                       return (
-                        <button
-                          key={`gap-${index}`}
-                          className="calendar-gap"
-                          aria-label={`Create an event on ${day} at ${new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(entry.gap.start)}`}
-                          onClick={() => create(day, entry.gap)}
-                        >
-                          <span className="calendar-gap-line" />
-                          <span>
-                            + New event{" "}
-                            <small>
-                              {new Intl.DateTimeFormat(undefined, {
-                                timeStyle: "short",
-                              }).format(entry.gap.start)}{" "}
-                              · {eventDuration(entry.gap)} free
-                            </small>
-                          </span>
-                          <span className="calendar-gap-line" />
-                        </button>
-                      );
-                    const event = entry.row;
-                    const calendar = calendarMap.get(
-                      calendarKey(event.account_id, event.calendar_google_id),
-                    )!;
-                    const join = safeCalendarUrl(event.conference_url);
-                    const live =
-                      !event.all_day &&
-                      event.start <= now &&
-                      event.end > now &&
-                      event.my_response !== "declined";
-                    return (
-                      <article
-                        key={event._id}
-                        className={`calendar-event${event.end <= now && !event.all_day ? " is-past" : ""}${event.my_response === "declined" ? " is-declined" : ""}${live ? " is-live" : ""}`}
-                        style={{
-                          ["--calendar-color" as string]:
-                            calendar.color || "var(--m-accent)",
-                        }}
-                      >
-                        <button
-                          className="calendar-event-open"
-                          data-event-id={event._id}
-                          onClick={() => {
-                            rememberFocus();
-                            mailStore
-                              .getState()
-                              .setCalendarState({ calendarOpenId: event._id });
+                        <article
+                          key={event._id}
+                          className={[
+                            "calendar-event",
+                            event.all_day && "is-all-day",
+                            past && "is-past",
+                            live && "is-live",
+                            declined && "is-declined",
+                            event.my_response === "tentative" && "is-tentative",
+                            event.my_response === "needsAction" &&
+                              "is-unanswered",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          style={{
+                            ["--calendar-color" as string]:
+                              calendar.color || "var(--m-accent)",
                           }}
                         >
-                          <span className="calendar-event-time">
-                            {eventTimeLabel(event, day)}
-                            {!event.all_day && (
-                              <small> {eventDuration(event)}</small>
-                            )}
-                          </span>
-                          <span className="calendar-event-content">
-                            <span className="calendar-event-title">
-                              {event.summary || "Untitled event"}
-                              {live && (
-                                <small className="calendar-now">Now</small>
+                          <button
+                            className="calendar-event-open"
+                            data-event-id={event._id}
+                            onClick={() => open(event)}
+                          >
+                            <span className="calendar-event-time">
+                              {event.all_day ? (
+                                <>
+                                  All day
+                                  {span > 1 && (
+                                    <small>
+                                      Day {dayOfSpan} of {span}
+                                    </small>
+                                  )}
+                                </>
+                              ) : (
+                                <>
+                                  {eventTimeLabel(event, day)}
+                                  <small>{eventDuration(event)}</small>
+                                </>
                               )}
                             </span>
-                            <span className="calendar-event-meta">
-                              <i className="calendar-dot" />
-                              {calendar.summary}
-                              {accounts.length > 1 &&
-                                ` · ${state.accounts[event.account_id]?.email}`}
-                              {event.location && ` · ${event.location}`}
-                              {event.my_response === "declined" &&
-                                " · Declined"}
-                              {event.my_response === "needsAction" &&
-                                " · Awaiting your reply"}
-                              {event.start < localDayStart(day) &&
-                                !event.all_day &&
-                                " · From yesterday"}
+                            <span className="calendar-event-content">
+                              <span className="calendar-event-title">
+                                {event.summary || "Untitled event"}
+                              </span>
+                              <span className="calendar-event-meta">
+                                {live && (
+                                  <b className="calendar-tag is-now">
+                                    Now ·{" "}
+                                    {eventDuration({
+                                      start: now,
+                                      end: event.end,
+                                    })}{" "}
+                                    left
+                                  </b>
+                                )}
+                                {response && (
+                                  <b className="calendar-tag is-response">
+                                    {response}
+                                  </b>
+                                )}
+                                {tags.map((tag) => (
+                                  <b
+                                    className={`calendar-tag${tag === "Conflict" ? " is-conflict" : ""}`}
+                                    key={String(tag)}
+                                  >
+                                    {tag}
+                                  </b>
+                                ))}
+                                <span className="calendar-event-where">
+                                  {[
+                                    calendar.summary,
+                                    accounts.length > 1 &&
+                                      state.accounts[event.account_id]?.email,
+                                    locationLabel(event.location),
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                </span>
+                              </span>
+                              {event.write_error ? (
+                                <small className="calendar-event-error">
+                                  Not synced · open to retry
+                                </small>
+                              ) : event.pending_outbound ? (
+                                <small className="calendar-pending">
+                                  Waiting to sync
+                                </small>
+                              ) : null}
                             </span>
-                            {event.write_error ? (
-                              <small className="calendar-event-error">
-                                Not synced · open to retry
-                              </small>
-                            ) : event.pending_outbound ? (
-                              <small className="calendar-pending">
-                                Queued for Google Calendar
-                              </small>
-                            ) : null}
-                          </span>
-                        </button>
-                        {join &&
-                          event.my_response !== "declined" &&
-                          event.end > now &&
-                          event.start <= now + 15 * 60000 && (
-                            <a
-                              className="calendar-inline-join"
-                              href={join}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Join ↗
-                            </a>
-                          )}
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
+                          </button>
+                          {join &&
+                            !declined &&
+                            event.end > now &&
+                            event.start <= now + 15 * 60000 && (
+                              <a
+                                className="calendar-inline-join"
+                                href={join}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Join
+                              </a>
+                            )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              </React.Fragment>
             );
           })
         )}
@@ -631,13 +853,15 @@ export function Calendar(): React.ReactElement {
             className="calendar-load-more"
             onClick={() => setCount((value) => value + 14)}
           >
-            Show the next two weeks <span aria-hidden>↓</span>
+            Show two more weeks
           </button>
         )}
         {!!visible.length && (
           <p className="calendar-range-note">
-            Recent days and the next two months · <kbd>j</kbd> <kbd>k</kbd> move
-            · <kbd>n</kbd> new event · <kbd>t</kbd> today
+            <kbd>j</kbd>
+            <kbd>k</kbd> move <kbd>↵</kbd> open <kbd>n</kbd> new <kbd>t</kbd>{" "}
+            today <kbd>[</kbd>
+            <kbd>]</kbd> day
           </p>
         )}
       </div>
@@ -673,5 +897,23 @@ export function Calendar(): React.ReactElement {
           />
         )}
     </div>
+  );
+}
+
+function Chevron({
+  left,
+  down,
+}: {
+  left?: boolean;
+  down?: boolean;
+}): React.ReactElement {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden className="calendar-chevron">
+      <path
+        d={
+          left ? "M14.5 6l-6 6 6 6" : down ? "M7 10l5 5 5-5" : "M9.5 6l6 6-6 6"
+        }
+      />
+    </svg>
   );
 }

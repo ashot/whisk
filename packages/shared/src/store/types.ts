@@ -26,6 +26,8 @@ export type Account = {
   /** How far the running pass has read; `review` is its second look at
    *  the mail the first look left without a topic. */
   cluster_progress?: { done: number; total: number; review: boolean; tidy?: boolean };
+  /** The inbox is being re-scored on the views after hand placements. */
+  lens_sorting?: boolean;
   updated_at: number;
 };
 

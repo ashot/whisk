@@ -1,0 +1,18 @@
+/* The desktop calendar window (lib/calendarWindow): no rail to carry the
+   traffic lights, so the calendar's own header makes room for them, and a
+   strip across the top of the window drags it at any width. */
+html.desktop .shell-calendar::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 38px;
+  -webkit-app-region: drag;
+  pointer-events: none;
+}
+html.desktop .shell-calendar .calendar-header {
+  padding-top: 42px;
+  -webkit-app-region: drag;
+}
+html.desktop .shell-calendar .calendar-header :is(button, a, input, select, [role="button"]) {
+  -webkit-app-region: no-drag;
+}

@@ -1,8 +1,9 @@
-import React from "react";
+import React, { useState } from "react";
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { Attachment, Message } from "@mail/shared/src/store/types";
-import { displayName, formatSize, fullDate, recipientsLine, relativeDate } from "@mail/shared/src/lib/format";
+import { addressRows, displayName, formatSize, fullDate, recipientsLine, relativeDate } from "@mail/shared/src/lib/format";
+import { headersText, useMessageHeaders } from "@mail/shared/src/store/headersBridge";
 import { isOwnAddress, type Sender } from "@mail/shared/src/lib/sendAs";
 import { attachmentUrl } from "../lib/attachments";
 import { fonts, type Theme } from "../lib/theme";
@@ -46,6 +47,44 @@ function AttachmentChips({
   );
 }
 
+/** Every address on the message, its full date, and on request the whole
+ *  header block from Gmail. */
+function MessageDetails({ m, t }: { m: Message; t: Theme }): React.ReactElement {
+  const [headers, toggleHeaders] = useMessageHeaders(m.gmail_id);
+  const row = (label: string, value: string) => (
+    <View key={label} style={styles.detailRow}>
+      <Text style={[styles.detailLabel, { color: t.inkFaint }]}>{label}</Text>
+      <Text selectable style={[styles.detailValue, { color: t.ink }]}>
+        {value}
+      </Text>
+    </View>
+  );
+  return (
+    <View style={[styles.details, { borderColor: t.rule, backgroundColor: t.bgSunken }]}>
+      {addressRows(m).map(({ label, people }) =>
+        row(label, people.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(", ")),
+      )}
+      {row("Date", fullDate(m.date))}
+      <Pressable onPress={toggleHeaders} hitSlop={8} style={styles.headersToggle}>
+        <Text style={[styles.headersToggleText, { color: t.inkMuted }]}>
+          {headers.status === "open"
+            ? "Hide all headers"
+            : headers.status === "loading"
+              ? "Loading headers…"
+              : headers.status === "error"
+                ? "Couldn't load headers, tap to retry"
+                : "All headers"}
+        </Text>
+      </Pressable>
+      {headers.status === "open" && (
+        <Text selectable style={[styles.headers, { color: t.inkMuted }]}>
+          {headersText(headers.headers)}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 export function MessageCard({
   m,
   me,
@@ -62,6 +101,7 @@ export function MessageCard({
   onToggle: () => void;
 }): React.ReactElement {
   const mine = !!me && isOwnAddress(me, m.from.email);
+  const [details, setDetails] = useState(false);
 
   if (!expanded) {
     return (
@@ -94,16 +134,18 @@ export function MessageCard({
           <Text style={[styles.fromName, { color: t.ink }]} numberOfLines={1}>
             {displayName(m.from, me)}
           </Text>
-          {toLine && (
-            <Text style={[styles.toLine, { color: t.inkFaint }]} numberOfLines={1}>
-              {toLine}
+          <Pressable onPress={() => setDetails((open) => !open)} hitSlop={6} style={styles.toRow}>
+            <Text style={[styles.toLine, { color: details ? t.inkMuted : t.inkFaint }]} numberOfLines={1}>
+              {toLine ?? "to undisclosed recipients"}
             </Text>
-          )}
+            <Ionicons name={details ? "chevron-up" : "chevron-down"} size={11} color={t.inkFaint} />
+          </Pressable>
         </View>
         <Text style={[styles.date, { color: t.inkFaint }]} accessibilityHint={fullDate(m.date)}>
           {relativeDate(m.date)}
         </Text>
       </Pressable>
+      {details && <MessageDetails m={m} t={t} />}
       <View style={styles.body}>
         {m.body_html ? (
           <HtmlBody html={m.body_html} t={t} mode={mode} />
@@ -141,7 +183,21 @@ const styles = StyleSheet.create({
   },
   who: { flex: 1, minWidth: 0 },
   fromName: { fontFamily: fonts.uiSemiBold, fontSize: 14.5 },
-  toLine: { fontFamily: fonts.ui, fontSize: 12, marginTop: 0.5 },
+  toRow: { flexDirection: "row", alignItems: "center", gap: 3, alignSelf: "flex-start", maxWidth: "100%" },
+  toLine: { fontFamily: fonts.ui, fontSize: 12, marginTop: 0.5, flexShrink: 1 },
+  details: {
+    marginTop: 8,
+    padding: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 6,
+    gap: 5,
+  },
+  detailRow: { flexDirection: "row", gap: 10 },
+  detailLabel: { fontFamily: fonts.mono, fontSize: 10, width: 62, paddingTop: 2, textTransform: "uppercase" },
+  detailValue: { fontFamily: fonts.ui, fontSize: 12.5, lineHeight: 17, flex: 1 },
+  headersToggle: { paddingLeft: 72, paddingTop: 2 },
+  headersToggleText: { fontFamily: fonts.ui, fontSize: 12.5 },
+  headers: { fontFamily: fonts.mono, fontSize: 10.5, lineHeight: 15, paddingTop: 4 },
   date: { fontFamily: fonts.mono, fontSize: 11 },
   body: { paddingTop: 8, paddingBottom: 14 },
   text: { fontFamily: fonts.read, fontSize: 16.5, lineHeight: 25 },

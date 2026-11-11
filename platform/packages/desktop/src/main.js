@@ -408,6 +408,9 @@ function createDesktopApp(userConfig, electron = require("electron")) {
     // origin too or the preload keeps the bridge from the app's own page.
     const origins = opts.file ? `${ORIGINS_ARG},file://` : ORIGINS_ARG;
     const win = new BrowserWindow({
+      // Anything else the window needs (frameless, floating, placed) rides
+      // here; the shell's own keys below keep the preload and the icon.
+      ...(opts.window || {}),
       width: opts.width || 720,
       height: opts.height || 560,
       minWidth: opts.minWidth || 480,
@@ -421,9 +424,14 @@ function createDesktopApp(userConfig, electron = require("electron")) {
       backgroundColor: opts.backgroundColor || cfg.window.backgroundColor,
       ...(opts.parent ? { parent: opts.parent } : {}),
     });
-    win.once("ready-to-show", () => win.show());
+    // A panel that must not take the keyboard from what the person is doing
+    // shows without focus.
+    win.once("ready-to-show", () => (opts.showInactive ? win.showInactive() : win.show()));
     if (opts.file) win.loadFile(opts.file);
     else if (opts.url) win.loadURL(opts.url);
+    // A page of the site itself, from wherever the app is loading it (the
+    // live site, the local dev server, or the offline copy).
+    else if (opts.path) win.loadURL(`${currentBaseUrl}${opts.path}`);
     return win;
   }
 
@@ -559,6 +567,9 @@ function createDesktopApp(userConfig, electron = require("electron")) {
   // ---------------------------------------------------------------------------
 
   const tabWindows = new Set();
+  // The key an app opened a tab window under (openTabWindow), so asking again
+  // brings that window forward instead of opening a second one.
+  const tabWindowKeys = new Map();
   let pendingAdoptPaths = [];
 
   // Only app-internal paths may ride the detach/attach IPC — a stray absolute
@@ -611,10 +622,30 @@ function createDesktopApp(userConfig, electron = require("electron")) {
     guardNavigation(win);
     win.on("closed", () => {
       tabWindows.delete(win);
+      tabWindowKeys.delete(win);
       broadcastWindowRole();
     });
     broadcastWindowRole();
     return win;
+  }
+
+  // A tab window the app opens itself (a menu item, a button in the page).
+  // With a key, the window already open under it comes forward instead.
+  function openTabWindow(navPath, opts = {}) {
+    const clean = sanitizeTabPath(navPath);
+    if (!clean) return null;
+    if (opts.key) {
+      for (const [win, key] of tabWindowKeys) {
+        if (key !== opts.key || win.isDestroyed()) continue;
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+        return { window: win, created: false };
+      }
+    }
+    const win = createTabWindow(clean);
+    if (opts.key) tabWindowKeys.set(win, opts.key);
+    return { window: win, created: true };
   }
 
   ipcMain.handle("detach-tab", (_e, navPath) => {
@@ -940,7 +971,15 @@ function createDesktopApp(userConfig, electron = require("electron")) {
   }
 
   function navigateMain(navPath) {
-    if (!mainWindow) return;
+    // Closed (macOS keeps the app alive): open it again on that path.
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow();
+      const win = mainWindow;
+      win?.webContents.once("did-finish-load", () => {
+        if (!win.isDestroyed()) win.webContents.executeJavaScript(navigateJs(navPath));
+      });
+      return;
+    }
     mainWindow.show();
     mainWindow.focus();
     mainWindow.webContents.executeJavaScript(navigateJs(navPath));
@@ -1712,6 +1751,8 @@ function createDesktopApp(userConfig, electron = require("electron")) {
     // A window on the shell's preload, for an app's own pages (a setup
     // screen, a native panel). Loads a file or a URL; the bridge is there.
     openWindow,
+    // A tab window on one of the app's paths, reused by key.
+    openTabWindow,
     // Rebuild the tray and app menus so `visible` on app items is read again.
     refreshMenus,
   };

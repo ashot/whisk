@@ -5,14 +5,18 @@ import {
   calendarKey,
   calendarPreferences,
   calendarVisible,
+  conflictingEvents,
   defaultEventTime,
   editableEvent,
   eventOnDay,
+  eventRelative,
   eventsForDay,
   freeSlots,
   localDateTime,
   localDayKey,
   localDayStart,
+  locationLabel,
+  meetingProvider,
   safeCalendarUrl,
   utcDayStamp,
 } from "./calendar";
@@ -168,5 +172,42 @@ describe("calendar feed and creation", () => {
     expect(safeCalendarUrl("https://meet.google.com/abc-defg-hij")).toBe(
       "https://meet.google.com/abc-defg-hij",
     );
+  });
+});
+
+describe("calendar labels", () => {
+  test("names the meeting product behind a join link", () => {
+    expect(meetingProvider("https://meet.google.com/abc-defg-hij")).toBe("Google Meet");
+    expect(meetingProvider("https://acme.zoom.us/j/123")).toBe("Zoom");
+    expect(meetingProvider("https://teams.microsoft.com/l/meetup-join/x")).toBe("Teams");
+    expect(meetingProvider("https://notzoom.us.evil.com/j/1")).toBeNull();
+    expect(meetingProvider("https://example.com/call")).toBeNull();
+    expect(meetingProvider(undefined)).toBeNull();
+    expect(locationLabel("https://meet.google.com/abc-defg-hij")).toBe("Google Meet");
+    expect(locationLabel("https://www.example.com/room/4")).toBe("example.com");
+    expect(locationLabel("  Room 4B ")).toBe("Room 4B");
+    expect(locationLabel(undefined)).toBe("");
+  });
+  test("says where an event sits relative to now", () => {
+    const now = at("10:00");
+    expect(eventRelative(event(at("10:25"), at("11:00")), now)).toBe("In 25m");
+    expect(eventRelative(event(at("11:40"), at("13:00")), now)).toBe("In 1h 40m");
+    expect(eventRelative(event(at("14:40"), at("15:00")), now)).toBe("In 5h");
+    expect(eventRelative(event(at("09:30"), at("10:45")), now)).toBe("Now · 45m left");
+    expect(eventRelative(event(at("08:00"), at("09:00")), now)).toBe("Ended");
+    expect(eventRelative(event(at("09:00", "2026-09-05"), at("10:00", "2026-09-05")), now)).toBe("Tomorrow");
+    expect(eventRelative(event(at("11:00", "2026-09-05"), at("12:00", "2026-09-05")), now)).toBe("Tomorrow");
+    expect(eventRelative(event(at("11:00", "2026-09-08"), at("12:00", "2026-09-08")), now)).toBe("In 4 days");
+    expect(eventRelative(event(utcDayStamp("2026-09-04"), utcDayStamp("2026-09-05"), { all_day: true }), now)).toBeNull();
+  });
+  test("flags overlapping events but never declined ones", () => {
+    const rows = [
+      event(at("09:00"), at("10:00"), { _id: "a" }),
+      event(at("09:30"), at("10:30"), { _id: "b" }),
+      event(at("10:30"), at("11:00"), { _id: "c" }),
+      event(at("10:45"), at("11:15"), { _id: "d", my_response: "declined" }),
+      event(utcDayStamp("2026-09-04"), utcDayStamp("2026-09-05"), { _id: "e", all_day: true }),
+    ];
+    expect([...conflictingEvents(rows, "2026-09-04")].sort()).toEqual(["a", "b"]);
   });
 });

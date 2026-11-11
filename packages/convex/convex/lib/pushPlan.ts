@@ -13,6 +13,9 @@ import {
 } from "@mail/shared/src/lib/notifications";
 import { participantsLine } from "@mail/shared/src/lib/format";
 import type { Thread } from "@mail/shared/src/store/types";
+import type { CalendarEvent } from "@mail/shared/src/lib/calendarTypes";
+import { meetingContent, STARTING_GRACE_MS } from "@mail/shared/src/lib/meetingAlerts";
+import { safeCalendarUrl } from "@mail/shared/src/lib/calendar";
 import type { Sender } from "@mail/shared/src/lib/sendAs";
 
 /** Mail older than this is not "new": a backfill, or a catch-up after a
@@ -112,4 +115,32 @@ export function newMailPushes(input: PlanInput): PushMessage[] {
   const body =
     input.prefs.preview === "none" ? "Open Whisk to read them." : names.slice(0, 4).join(", ") + (names.length > 4 ? ` and ${names.length - 4} more` : "");
   return [{ title: `${passing.length} new messages`, body, data: { kind: "mail-digest", account_id: passing[0].account_id }, sound, priority: "high", ttlSeconds: 60 * 60 }];
+}
+
+/** What a meeting push carries: the event, and the link a tap joins. */
+export type MeetingPushData = {
+  kind: "meeting";
+  event_id: string;
+  account_id: string;
+  join?: string;
+};
+
+/** The phone's reminder for one meeting: the same words as the desktop
+ *  alert, the meeting sound, and time sensitive so iOS lets it through a
+ *  Focus. A tap joins when there is a link to join. */
+export function meetingPush(event: CalendarEvent, prefs: NotificationPrefs, now: number): PushMessage {
+  const { title, body } = meetingContent(event, prefs, now);
+  const join = safeCalendarUrl(event.conference_url) ?? undefined;
+  const data: MeetingPushData = { kind: "meeting", event_id: event._id, account_id: event.account_id, ...(join ? { join } : {}) };
+  return {
+    title,
+    body: join ? `${body} · Tap to join` : body,
+    data,
+    sound: "meeting-push.wav",
+    channelId: "meetings",
+    interruptionLevel: "time-sensitive",
+    priority: "high",
+    // Worthless once the meeting has been going a while.
+    ttlSeconds: Math.max(60, Math.round((event.start + STARTING_GRACE_MS - now) / 1000)),
+  };
 }

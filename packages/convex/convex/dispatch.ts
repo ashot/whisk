@@ -44,7 +44,7 @@ import {
 } from "./clusters";
 import { describeActions, liveFilters, validateActions } from "./filters";
 import { spendModelBudget } from "./ai/filterSupport";
-import { markLens, scheduleLensPass } from "./lenses";
+import { markLens, requestRescore } from "./lenses";
 import { LENS_BATCH, LENS_INBOX_PASS } from "./ai/lenses";
 import { checkOutgoingSize, outgoingAsAttachments } from "@mail/shared/src/lib/attachments";
 import { outgoingAttachmentValidator } from "./schema";
@@ -721,11 +721,13 @@ const setLensMark: SideEffect = async (ctx, session, args) => {
 };
 
 /** The lens itself rides the prefs patch in this same dispatch; this scores
- *  every mailbox's recent inbox on it under its new description. */
+ *  every mailbox's whole inbox on it under its new description. */
 const saveLens: SideEffect = async (ctx, session, args) => {
   if (typeof args?.id !== "string" || !args.id) throw new Error("saveLens needs an id");
-  for (const account of session.accounts) await spendModelBudget(ctx, account, Math.ceil(LENS_INBOX_PASS / LENS_BATCH));
-  await scheduleLensPass(ctx, session.accounts.map((a) => a._id), { lensIds: [args.id] });
+  for (const account of session.accounts) {
+    await spendModelBudget(ctx, account, Math.ceil(LENS_INBOX_PASS / LENS_BATCH));
+    await requestRescore(ctx, account._id, [args.id], 0);
+  }
   return { scheduled: session.accounts.length };
 };
 

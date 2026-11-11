@@ -487,6 +487,27 @@ test("app defined ipc handlers, events, menu items and windows", async () => {
   expect(() => api.emit("not-listed", 1)).toThrow(/ipc.events/);
 });
 
+test("an app's tab window is reused by key, and an app window can load a site path", async () => {
+  const el = fakeElectron();
+  const api = createDesktopApp({ ...WHISK, web: { cache: false }, urls: { prod: "https://whisk.email" } }, el);
+  el.app._fireReady();
+  await new Promise((r) => setTimeout(r, 10));
+  const first = api.openTabWindow("/#calendar", { key: "calendar" });
+  expect(first.created).toBe(true);
+  expect(first.window.loaded).toBe("https://whisk.email/#calendar");
+  expect(first.window.opts.webPreferences.additionalArguments).toContain("--tab-window");
+  // Asking again focuses the open one instead of stacking a copy.
+  const again = api.openTabWindow("/?event=e1#calendar", { key: "calendar" });
+  expect(again).toEqual({ window: first.window, created: false });
+  // Another key, or none, is another window; a foreign URL is refused.
+  expect(api.openTabWindow("/#inbox").created).toBe(true);
+  expect(api.openTabWindow("https://evil.example/")).toBe(null);
+  // A floating panel on a page of the site, shown without focus.
+  const panel = api.openWindow({ path: "/meeting-alert/", window: { frame: false, alwaysOnTop: true }, showInactive: true });
+  expect(panel.loaded).toBe("https://whisk.email/meeting-alert/");
+  expect(panel.opts).toMatchObject({ frame: false, alwaysOnTop: true });
+});
+
 test("the OS notification surface: cached status, the settings pane, and no false 'granted'", async () => {
   const el = fakeElectron();
   const api = createDesktopApp({ ...WHISK, web: { cache: false } }, el);

@@ -229,3 +229,73 @@ export function calendarGuests(value: string): string[] | null {
     return null;
   return [...new Set(emails)];
 }
+
+const MEETING_PROVIDERS: Array<[RegExp, string]> = [
+  [/(^|\.)meet\.google\.com$/, "Google Meet"],
+  [/(^|\.)zoom\.(us|com)$/, "Zoom"],
+  [/(^|\.)teams\.(microsoft|live)\.com$/, "Teams"],
+  [/(^|\.)webex\.com$/, "Webex"],
+  [/(^|\.)whereby\.com$/, "Whereby"],
+  [/(^|\.)around\.co$/, "Around"],
+];
+
+/** The product a join link opens, so the button can say where it goes. */
+export function meetingProvider(url: string | null | undefined): string | null {
+  const host = url ? URL.parse(url)?.hostname.toLowerCase() : undefined;
+  if (!host) return null;
+  return MEETING_PROVIDERS.find(([pattern]) => pattern.test(host))?.[1] ?? null;
+}
+
+/** Where a timed event sits relative to now, in a few words. */
+export function eventRelative(
+  event: Pick<CalendarEvent, "start" | "end" | "all_day">,
+  now = Date.now(),
+): string | null {
+  if (event.all_day) return null;
+  if (event.end <= now) return "Ended";
+  if (event.start <= now)
+    return `Now · ${eventDuration({ start: now, end: event.end })} left`;
+  const minutes = Math.round((event.start - now) / MINUTE);
+  if (minutes < 1) return "Starting now";
+  const days = Math.round(
+    (localDayStart(localDayKey(event.start)) -
+      localDayStart(localDayKey(now))) /
+      (24 * 60 * MINUTE),
+  );
+  if (days === 1) return "Tomorrow";
+  if (days > 1) return `In ${days} days`;
+  return minutes < 120
+    ? `In ${eventDuration({ start: 0, end: minutes * MINUTE })}`
+    : `In ${Math.round(minutes / 60)}h`;
+}
+
+/** Timed events on a day that share time with another event you have not
+ *  declined. Declined events never conflict. */
+export function conflictingEvents(
+  events: CalendarEvent[],
+  day: string,
+): Set<string> {
+  const timed = eventsForDay(events, day).filter(
+    (event) => !event.all_day && event.my_response !== "declined",
+  );
+  const clashes = new Set<string>();
+  for (let i = 0; i < timed.length; i++)
+    for (let j = i + 1; j < timed.length && timed[j].start < timed[i].end; j++) {
+      clashes.add(timed[i]._id);
+      clashes.add(timed[j]._id);
+    }
+  return clashes;
+}
+
+/** A location as it reads in a list: a pasted link shows as the meeting
+ *  product or its site, never the raw URL. */
+export function locationLabel(location: string | undefined): string {
+  const text = location?.trim() ?? "";
+  const url = safeCalendarUrl(text);
+  if (!url) return text;
+  return (
+    meetingProvider(url) ??
+    URL.parse(url)?.hostname.replace(/^www\./, "") ??
+    text
+  );
+}

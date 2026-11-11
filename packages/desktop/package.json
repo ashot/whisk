@@ -1,6 +1,6 @@
 {
   "name": "@mail/desktop",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "productName": "Whisk",
   "description": "Whisk: email and calendar for your Gmail",

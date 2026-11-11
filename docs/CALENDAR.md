@@ -17,9 +17,15 @@ Whisk Calendar opens as a vertical timeline. Calendars from every connected acco
 
 Settings → Calendar controls reminders, enabled five minutes before timed events by default. Upcoming events appear in a small in-app card, with Join only when a valid meeting URL exists.
 
-Keep Whisk open. These are browser/desktop reminders, not server-scheduled push notifications. The scheduler checks every 15 seconds and on focus/visibility changes, catches upcoming events after wake, and never posts a late system reminder after the event has started. All-day, declined, cancelled, disconnected and hidden-calendar events stay quiet.
+Each meeting alerts in two stages (`shared/lib/meetingAlerts.ts`): "soon" as it enters the lead window, and "now" from 30 seconds before the start to two minutes after. The app checks every 15 seconds and on focus or visibility changes, so a laptop that wakes during a meeting's first two minutes still says it is starting. All-day, declined, cancelled, disconnected and hidden-calendar events stay quiet.
 
-System banners follow the shared notification master switch, account switches, quiet hours, pause, focus, sound and privacy settings. Mail-only category and VIP rules do not filter meetings. Permission is requested only through an explicit settings button. Event occurrence keys suppress repeat banners and copied invitations across accounts; browser Web Locks serialize claims across tabs and local storage preserves them across reloads. A rescheduled start is a new occurrence. If storage or system notifications are unavailable, the in-app card remains available.
+- **Desktop app**: both stages go to the shell's meeting card (`packages/desktop/main.js`, page `web/meeting-alert/`), a frameless window floating top right over every app, Space and full-screen window, with the meeting's sound. It stays until joined, opened or dismissed; "now" comes back after a dismissed "soon" unless the meeting was joined, and the Dock icon jumps once. A shell from before the card gets a plain system banner.
+- **Browser**: a system notification when the tab is in the background, plus the in-app card, with the meeting's sound played by the page.
+- **Phone**: the server pushes each meeting once as it enters the lead window (`convex/meetingPush.ts`, a one-minute cron), time sensitive so iOS lets it through a Focus, with `meeting-push.wav`. A tap joins the meeting when it has a link. Claims in `meeting_pushes` keep it to one push per meeting across ticks and calendars.
+
+The three sounds are synthesized by `scripts/sounds.py` into `packages/shared/assets/sounds/`; rerun it to retune them.
+
+Alerts follow the shared notification master switch, account switches, quiet hours (on the phone's clock for pushes), pause, sound and privacy settings. Mail-only category and VIP rules do not filter meetings. Permission is requested only through an explicit settings button. Event occurrence keys suppress repeat banners and copied invitations across accounts; browser Web Locks serialize claims across tabs and local storage preserves them across reloads. A rescheduled start is a new occurrence. If storage or system notifications are unavailable, the in-app card remains available.
 
 ## Terminal
 

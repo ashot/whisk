@@ -120,9 +120,63 @@ export async function markLens(
     await ctx.db.patch(t._id, { lens_marks: any ? marks : undefined, marked_at: any ? now : undefined, updated_at: now });
     marked++;
   }
-  if (belongs === null && marked > 0) await scheduleLensPass(ctx, [account._id], { threadGmailIds, lensIds: [lensId] });
+  if (marked > 0) await requestRescore(ctx, account._id, [lensId]);
   return { marked };
 }
+
+/** How long a re-score waits after the last placement, so a burst of them
+ *  (a drag, then another, then a right-click) costs one pass. */
+const RESCORE_DEBOUNCE_MS = 15_000;
+
+/** Book a whole-inbox re-score of `lensIds`, so every thread is judged again
+ *  with the person's newest placements as examples. One job per mailbox: a
+ *  booked one is pushed back to start after the quiet period, and a running
+ *  one leaves the lenses for the pass that follows it. */
+export async function requestRescore(
+  ctx: { db: MutationCtx["db"] } & SchedCtx,
+  accountId: Id<"accounts">,
+  lensIds: string[],
+  delayMs = RESCORE_DEBOUNCE_MS,
+): Promise<void> {
+  if (!process.env.ANTHROPIC_API_KEY) return;
+  const account = await ctx.db.get(accountId);
+  if (!account) return;
+  const pending = [...new Set([...(account.lens_pending ?? []), ...lensIds])];
+  if (account.lens_job) {
+    const job = await ctx.db.system.get(account.lens_job);
+    if (job?.state.kind === "inProgress") {
+      await ctx.db.patch(accountId, { lens_pending: pending });
+      return;
+    }
+    if (job?.state.kind === "pending") await ctx.scheduler.cancel(account.lens_job);
+  }
+  const job = await ctx.scheduler.runAfter(delayMs, internal.ai.actions.rescoreLenses, { accountId });
+  await ctx.db.patch(accountId, { lens_job: job, lens_pending: pending, lens_started_at: undefined });
+}
+
+/** A re-score begins: it takes the pending lenses (later placements gather
+ *  for the next pass). */
+export const startRescore = internalMutation({
+  args: { accountId: v.id("accounts") },
+  handler: async (ctx, { accountId }) => {
+    const account = await ctx.db.get(accountId);
+    if (!account) return [];
+    await ctx.db.patch(accountId, { lens_pending: undefined, lens_started_at: Date.now() });
+    return account.lens_pending ?? [];
+  },
+});
+
+/** A re-score ended, well or not: book the next one if placements arrived
+ *  while it ran. */
+export const finishRescore = internalMutation({
+  args: { accountId: v.id("accounts") },
+  handler: async (ctx, { accountId }) => {
+    const account = await ctx.db.get(accountId);
+    if (!account) return;
+    await ctx.db.patch(accountId, { lens_job: undefined, lens_started_at: undefined });
+    if (account.lens_pending?.length) await requestRescore(ctx, accountId, []);
+  },
+});
 
 /** Judge mail again for the named mailboxes: the given threads, else the
  *  newest `limit` in the inbox; every lens, else the named ones. */

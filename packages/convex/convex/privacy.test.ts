@@ -120,8 +120,9 @@ describe("private mail", () => {
     await expect(t.query(internal.ai.draft.contextForThread, { token: agent, threadGmailId: secret.gmail_id })).rejects.toThrow("Thread not found");
     await t.query(internal.ai.summarize.summaryContext, { token: owner, threadGmailId: secret.gmail_id });
 
-    // An attachment download resolves nothing.
-    expect(await t.query(internal.gmail.attachments.attachmentContext, { token: agent, viaHeader: true, messageGmailId: message.gmail_id })).toBeNull();
+    // An attachment download or a header fetch resolves nothing.
+    expect(await t.query(internal.gmail.attachments.messageContext, { token: agent, viaHeader: true, messageGmailId: message.gmail_id })).toBeNull();
+    await expect(t.action(api.gmail.attachments.messageHeaders, { token: agent, messageGmailId: message.gmail_id })).rejects.toThrow("Message not found");
 
     const status = await t.query(api.privacy.status, { token: owner });
     expect(status).toMatchObject({ hides_private: false, private: 1, pending: 0, rules: [{ id: "p1", threads: 1 }] });

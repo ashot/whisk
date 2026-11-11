@@ -20,6 +20,8 @@ export default defineConfig({
         main: resolve(__dirname, "index.html"),
         privacy: resolve(__dirname, "privacy/index.html"),
         terms: resolve(__dirname, "terms/index.html"),
+        // The desktop app's floating meeting card (packages/desktop/main.js).
+        meetingAlert: resolve(__dirname, "meeting-alert/index.html"),
       },
     },
   },

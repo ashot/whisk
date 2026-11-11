@@ -23,7 +23,8 @@ mock.module("expo-device", () => ({ isDevice: false }));
 mock.module("expo-constants", () => ({ default: {} }));
 mock.module("expo-secure-store", () => ({ AFTER_FIRST_UNLOCK: 0, getItemAsync: async () => null, setItemAsync: async () => {}, deleteItemAsync: async () => {} }));
 mock.module("expo-crypto", () => ({ randomUUID: () => "uuid" }));
-mock.module("react-native", () => ({ AppState: { addEventListener: () => ({ remove: () => {} }) }, Platform: { OS: "ios" } }));
+const openedUrls: string[] = [];
+mock.module("react-native", () => ({ AppState: { addEventListener: () => ({ remove: () => {} }) }, Platform: { OS: "ios" }, Linking: { openURL: async (u: string) => void openedUrls.push(u) } }));
 const kv = new Map<string, string>();
 mock.module("./kv", () => ({
   sqliteKV: { getItem: async (k: string) => kv.get(k) ?? null, setItem: async (k: string, v: string) => void kv.set(k, v), removeItem: async (k: string) => void kv.delete(k) },
@@ -106,4 +107,14 @@ test("a push received with no app mounted boots the store, fetches the mail into
   const android = { notification: null, data: { dataString: JSON.stringify({ kind: "mail", thread_id: "d", thread_gmail_id: "gd", account_id: "acct" }) } };
   expect(await task!({ data: android, error: null })).toBe(2);
   expect(await task!({ data: { notification: null, data: { body: { kind: "mail-digest" } } }, error: null })).toBe(1);
+});
+
+test("a tap on a meeting push joins the meeting and leaves the screen alone", () => {
+  openedUrls.length = 0;
+  open({ kind: "meeting", join: "https://meet.google.com/abc-defg-hij" });
+  expect(openedUrls).toEqual(["https://meet.google.com/abc-defg-hij"]);
+  expect(dismissed).toBe(0);
+  // Only web links are followed.
+  open({ kind: "meeting", join: "javascript:alert(1)" });
+  expect(openedUrls).toHaveLength(1);
 });

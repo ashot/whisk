@@ -28,6 +28,8 @@ import { SearchBar } from "./components/SearchBar";
 import { ConvexSync } from "./sync/ConvexSync";
 import { useHashRouter } from "./sync/hashRouter";
 import { ComposeFab } from "./components/MobileNav";
+import { isCalendarWindow } from "./lib/calendarWindow";
+import "./design/calendar-window.css";
 // Last, so the phone layout overrides every component sheet above it.
 import "./design/mobile.css";
 
@@ -60,6 +62,8 @@ export function App(): React.ReactElement {
   // Another app (codecast) sends the person to /connect the same way.
   const [appRequest, appDone] = useAppConnect();
   const solo = s.openThreadId !== null && s.openThreadId === s.soloThreadId;
+  // The desktop calendar window is the calendar alone (lib/calendarWindow).
+  const calendarOnly = isCalendarWindow;
 
   // ConvexSync stays the FIRST child in a stable Fragment across every branch,
   // so hydration/auth transitions never remount it (a remount would tear down
@@ -83,22 +87,22 @@ export function App(): React.ReactElement {
         <>
           {/* A linked thread is a page of its own: the rail stays out until
               the person leaves the thread, then the app is there behind it. */}
-          <div className={`shell${solo ? " shell-solo" : ""}${s.navOpen ? " is-nav-open" : ""}`}>
-            {!solo && <Rail />}
+          <div className={`shell${solo || calendarOnly ? " shell-solo" : ""}${calendarOnly ? " shell-calendar" : ""}${s.navOpen ? " is-nav-open" : ""}`}>
+            {!solo && !calendarOnly && <Rail />}
             {/* On a phone the rail is a drawer; the scrim behind it closes it. */}
             {s.navOpen && <div className="nav-scrim" onClick={() => useMailStore.getState().setNav(false)} aria-hidden />}
             <main className="main">
               {s.searchOpen && <SearchBar />}
-              {s.openThreadId ? (
+              {s.openThreadId && !calendarOnly ? (
                 <ThreadView key={s.openThreadId} />
-              ) : s.activeView === "calendar" ? (
+              ) : s.activeView === "calendar" || calendarOnly ? (
                 <Calendar />
               ) : s.activeView === "sweep" ? (
                 <Sweep />
               ) : (
                 <ThreadList />
               )}
-              {!s.openThreadId && s.activeView !== "calendar" && <ComposeFab />}
+              {!s.openThreadId && s.activeView !== "calendar" && !calendarOnly && <ComposeFab />}
             </main>
           </div>
           <MeetingAlerts />

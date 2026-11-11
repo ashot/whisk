@@ -7,9 +7,10 @@ import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { CATEGORIES } from "@mail/shared/src/lib/categories";
 import { FAST_MODEL, LENS_MODEL, SMART_MODEL, aiConfigured, complete, completeJson } from "./llm";
-import { transcriptOf } from "./mailText";
+import { readableBody, transcriptOf } from "./mailText";
 import type { ClusterCandidate } from "../clusters";
 import type { JudgeRow } from "../filters";
+import { THREAD_WINDOW } from "../lib/rows";
 import { MIN_TOPIC, clusterSystem, groupCandidates, parseClusterVerdict, parseThemeVerdict, themeSystem, type LooseSender, type ThemeRow, type ThemeStream } from "./grouping";
 import { JUDGE_BATCH, JUDGE_SYSTEM, judgeView, parseJudgeVerdict } from "./judge";
 import { LENS_BATCH, LENS_INBOX_PASS, LENS_SYSTEM, lensInput, parseLensVerdict, type JudgedLens, type LensCorrection, type LensScore } from "./lenses";
@@ -200,11 +201,15 @@ const SUMMARY_PROMPT = {
     "No preamble, no bullet points, no 'this thread'.",
   ],
   latest: [
-    "You tell the owner of a mailbox what an email that just arrived says, for its notification.",
-    "Write 1–2 short plain sentences: what the sender says or asks, and what (if anything) it needs from the owner. Name people by first name.",
+    "You tell the owner of a mailbox what an email that just arrived says, for its notification. The earlier messages are there so you know what it answers; describe only the new one.",
+    "Write 1–2 short plain sentences: what the sender says or asks, concretely, and what (if anything) it needs from the owner. Name people by first name, and address the owner as \"you\" only for what was said to or by them.",
     "No preamble, no bullet points, no 'this email'.",
   ],
 };
+
+/** Longest new message (quotes and sign-off dropped) a notification shows
+ *  as written instead of summarized. */
+const SHORT_MESSAGE = 200;
 
 /** The thread's summary, or with `latest` just its newest message's, from
  *  the cache when no mail has landed since. The thread view reads the whole
@@ -229,12 +234,25 @@ async function summarize(
   });
   await recordUse(ctx, args.token);
   if (context.cached) return context.cached;
+  if (args.latest) {
+    // A message short enough to read in the banner is its own best summary.
+    const words = readableBody(context.messages[0] ?? { snippet: "" }).replace(/\s+/g, " ");
+    if (words && words.length <= SHORT_MESSAGE) return words;
+  }
   await chargeAppModelCall(ctx, args.token, context.account_id);
 
+  const owner = context.owner.name ? `${context.owner.name} <${context.owner.email}>` : context.owner.email;
+  const transcript = transcriptOf(context.messages, { lastN: 12, perMessage: 900 });
   const summary = await complete({
     model: FAST_MODEL,
     system: SUMMARY_PROMPT[args.latest ? "latest" : "thread"].join("\n"),
-    user: `Subject: ${context.subject}\n\n${transcriptOf(context.messages, { lastN: 12, perMessage: 900 })}`,
+    user: [
+      `Mailbox owner: ${owner}`,
+      `Subject: ${context.subject}`,
+      ...(context.earlier.length
+        ? [`Earlier in the thread:\n\n${transcriptOf(context.earlier, { perMessage: 600 })}`, `The new message:\n\n${transcript}`]
+        : [transcript]),
+    ].join("\n\n"),
     maxTokens: 300,
     timeoutMs: args.timeoutMs,
   });
@@ -747,24 +765,50 @@ export const judgeLenses = internalAction({
     /** With no ids: how many of the newest inbox threads to score. */
     limit: v.optional(v.number()),
   },
-  handler: async (ctx, { accountId, threadGmailIds, lensIds, limit }): Promise<{ applied: number }> => {
-    if (!aiConfigured()) return { applied: 0 };
-    const context: LensContext = await ctx.runQuery(internal.lenses.judgeContext, { accountId, lensIds });
-    if (context.lenses.length === 0) return { applied: 0 };
-    const rows = await readJudgeRows(ctx, accountId, threadGmailIds, limit ?? LENS_INBOX_PASS);
-    const revisions = Object.fromEntries(context.lenses.map((l) => [l.id, l.revision]));
-    let applied = 0;
-    await scoreRows(context, rows, async (scored) => {
-      const result: { applied: number } = await ctx.runMutation(internal.lenses.applyScores, {
-        accountId,
-        revisions,
-        results: scored.map((s) => ({ thread_gmail_id: s.row.gmail_id, message_count: s.row.message_count, last_at: s.row.last_at, scores: s.scores })),
-      });
-      applied += result.applied;
-    });
-    return { applied };
+  handler: async (ctx, { accountId, threadGmailIds, lensIds, limit }): Promise<{ applied: number }> =>
+    lensPass(ctx, accountId, { threadGmailIds, lensIds, limit }),
+});
+
+/**
+ * The whole inbox scored again on the lenses the person placed mail in,
+ * with their newest placements as examples. Booked by lenses.requestRescore,
+ * one at a time per mailbox; placements made meanwhile book the next pass.
+ */
+export const rescoreLenses = internalAction({
+  args: { accountId: v.id("accounts") },
+  handler: async (ctx, { accountId }): Promise<{ applied: number }> => {
+    const lensIds: string[] = await ctx.runMutation(internal.lenses.startRescore, { accountId });
+    try {
+      return lensIds.length ? await lensPass(ctx, accountId, { lensIds, limit: THREAD_WINDOW }) : { applied: 0 };
+    } finally {
+      await ctx.runMutation(internal.lenses.finishRescore, { accountId });
+    }
   },
 });
+
+/** Score threads (the given ones, else the newest `limit` in the inbox) on
+ *  the lenses named (else all) and land the scores batch by batch. */
+async function lensPass(
+  ctx: ActionCtx,
+  accountId: Id<"accounts">,
+  { threadGmailIds, lensIds, limit }: { threadGmailIds?: string[]; lensIds?: string[]; limit?: number },
+): Promise<{ applied: number }> {
+  if (!aiConfigured()) return { applied: 0 };
+  const context: LensContext = await ctx.runQuery(internal.lenses.judgeContext, { accountId, lensIds });
+  if (context.lenses.length === 0) return { applied: 0 };
+  const rows = await readJudgeRows(ctx, accountId, threadGmailIds, limit ?? LENS_INBOX_PASS);
+  const revisions = Object.fromEntries(context.lenses.map((l) => [l.id, l.revision]));
+  let applied = 0;
+  await scoreRows(context, rows, async (scored) => {
+    const result: { applied: number } = await ctx.runMutation(internal.lenses.applyScores, {
+      accountId,
+      revisions,
+      results: scored.map((s) => ({ thread_gmail_id: s.row.gmail_id, message_count: s.row.message_count, last_at: s.row.last_at, scores: s.scores })),
+    });
+    applied += result.applied;
+  });
+  return { applied };
+}
 
 /** Dry run of a draft description over the recent inbox: every thread's
  *  score and reason, nothing changed. The client slides its cutoff over

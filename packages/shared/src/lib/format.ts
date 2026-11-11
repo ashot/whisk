@@ -39,13 +39,28 @@ export function displayName(a: Address, me?: Sender): string {
   return a.email.split("@")[0];
 }
 
-/** "to Ada, Grace + me" under a message's sender. Only when it says
- *  something the reader can't assume: anyone beyond just-me, or a cc. */
+/** "to Ada, Grace + me" under a message's sender, "to me" when it went to
+ *  the reader alone. Null only when the message names no recipient at all
+ *  (a Bcc, an undisclosed list). */
 export function recipientsLine(m: Pick<Message, "to" | "cc">, me?: Sender): string | null {
   const mine = (a: Address) => !!me && isOwnAddress(me, a.email);
-  const others = [...m.to, ...(m.cc ?? [])].filter((a) => !mine(a));
-  if (others.length === 0) return null;
-  return `to ${others.map((a) => displayName(a, me)).join(", ")}${m.to.some(mine) ? " + me" : ""}`;
+  const all = [...m.to, ...(m.cc ?? [])];
+  const others = all.filter((a) => !mine(a));
+  if (all.length === 0) return null;
+  if (others.length === 0) return "to me";
+  return `to ${others.map((a) => displayName(a, me)).join(", ")}${all.some(mine) ? " + me" : ""}`;
+}
+
+/** The address headers of a message, as labelled rows; empty ones left out. */
+export function addressRows(m: Message): Array<{ label: string; people: Address[] }> {
+  const rows = [
+    { label: "From", people: [m.from] },
+    { label: "To", people: m.to },
+    { label: "Cc", people: m.cc ?? [] },
+    { label: "Bcc", people: m.bcc ?? [] },
+    { label: "Reply-To", people: m.reply_to ? [m.reply_to] : [] },
+  ];
+  return rows.filter((r) => r.people.length > 0);
 }
 
 /** "Ada, Grace 2" — Gmail-style participants line for a thread row. */

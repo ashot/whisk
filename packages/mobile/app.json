@@ -27,6 +27,9 @@
         "UIBackgroundModes": [
           "remote-notification"
         ]
+      },
+      "entitlements": {
+        "com.apple.developer.usernotifications.time-sensitive": true
       }
     },
     "android": {
@@ -49,7 +52,10 @@
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
-          "color": "#c93a0e"
+          "color": "#c93a0e",
+          "sounds": [
+            "../shared/assets/sounds/meeting-push.wav"
+          ]
         }
       ]
     ],

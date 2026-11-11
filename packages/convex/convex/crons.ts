@@ -42,6 +42,16 @@ crons.interval(
   {},
 );
 
+// Meetings reach the phone as they enter the person's lead window
+// ("5 minutes before"), so this ticks every minute. A tick reads only the
+// people with a phone, and their events inside the next hour.
+crons.interval(
+  "push upcoming meetings",
+  { minutes: 1 },
+  internal.meetingPush.sendDue,
+  {},
+);
+
 // Calendars change less often than mail and carry their own cursor per
 // calendar; a five minute tick keeps "up next" honest without spending the
 // Calendar API quota on quiet calendars. `sync.refresh` pulls on focus too.

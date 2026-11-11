@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   calendarEditPatch,
   calendarFormSchedule,
+  moveFormStart,
   type CalendarFormValues,
 } from "./calendarForm";
 import type {
@@ -99,4 +100,32 @@ test("all-day conversion uses inclusive dates and changed guests remain explicit
       attendees: ["ada@example.com"],
     }),
   ).toEqual({ ...schedule, attendees: ["ada@example.com"] });
+});
+
+test("moving the start keeps the event's length", () => {
+  const timed = { ...form, startTime: "16:00", endTime: "16:30" };
+  expect(moveFormStart(timed, { startDay: timed.startDay, startTime: "17:15" })).toMatchObject({
+    startTime: "17:15",
+    endDay: "2026-11-01",
+    endTime: "17:45",
+  });
+  expect(moveFormStart(timed, { startDay: timed.startDay, startTime: "23:45" })).toMatchObject({
+    endDay: "2026-11-02",
+    endTime: "00:15",
+  });
+  expect(moveFormStart(timed, { startDay: "2026-11-04" })).toMatchObject({
+    startDay: "2026-11-04",
+    endDay: "2026-11-04",
+    endTime: "16:30",
+  });
+  const allDay = { ...form, allDay: true, startDay: "2026-11-01", endDay: "2026-11-03" };
+  expect(moveFormStart(allDay, { startDay: "2026-11-10" })).toMatchObject({
+    startDay: "2026-11-10",
+    endDay: "2026-11-12",
+  });
+  const broken = { ...timed, endTime: "15:00" };
+  expect(moveFormStart(broken, { startDay: timed.startDay, startTime: "17:00" }).endTime).toBe("15:00");
+  // Mid-typing the start is blank; the remembered length still applies.
+  const typing = { ...timed, startTime: "" };
+  expect(moveFormStart(typing, { startDay: timed.startDay, startTime: "17:15" }, 30 * 60_000).endTime).toBe("17:45");
 });

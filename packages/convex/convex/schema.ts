@@ -111,6 +111,11 @@ export default defineSchema({
     cluster_job: v.optional(v.id("_scheduled_functions")),
     cluster_started_at: v.optional(v.number()),
     cluster_dirty: v.optional(v.boolean()),
+    // The whole-inbox lens re-score (lenses.requestRescore): the booked or
+    // running job, the lenses the next pass scores, and when it began.
+    lens_job: v.optional(v.id("_scheduled_functions")),
+    lens_pending: v.optional(v.array(v.string())),
+    lens_started_at: v.optional(v.number()),
     cluster_error: v.optional(v.string()),
     // How far the running pass has read: threads judged so far out of the
     // threads it set out to read, and whether it is on its second look at
@@ -623,6 +628,18 @@ export default defineSchema({
   // theme/density follow the person across devices. account_id remains only on
   // pre-migration rows. Named fields cover what the app reads today; `prefs`
   // is the open bag so a new client preference never needs a schema migration.
+  // Meetings already announced to a person's phones, so the minute cron
+  // pushes each one once (meetingPush.ts). Keyed like the desktop's claim
+  // (meetingKey), so a meeting on two connected calendars is one push.
+  // Dropped once the meeting is over.
+  meeting_pushes: defineTable({
+    user_id: v.id("users"),
+    key: v.string(),
+    expires_at: v.number(),
+  })
+    .index("by_user_key", ["user_id", "key"])
+    .index("by_expires", ["expires_at"]),
+
   // A phone that can be pushed to: one row per Expo push token, owned by the
   // user (not the mailbox), so one phone hears about every account the person
   // connected. Registered on every app launch; a dead token (app removed,

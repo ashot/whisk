@@ -59,19 +59,39 @@ export function upcomingMeetings(
     });
 }
 
+/** A meeting alerts twice: "soon" when it enters the lead window, and "now"
+ *  as it starts, half a minute early so the person is in the room on time.
+ *  The "now" stage holds for two minutes, so a laptop that wakes just after
+ *  the start still says so. */
+export type MeetingStage = "soon" | "now";
+export const STARTING_LEAD_MS = 30_000;
+export const STARTING_GRACE_MS = 2 * 60_000;
+
+export function meetingStage(
+  event: CalendarEvent,
+  now: number,
+): MeetingStage | null {
+  if (now < event.start - STARTING_LEAD_MS) return "soon";
+  if (now < event.start + STARTING_GRACE_MS) return "now";
+  return null;
+}
+
+/** `wall` is the person's own clock for quiet hours; the server, which runs
+ *  in UTC, passes it (see pushPlan.wallClock). */
 export function shouldAlertMeeting(
   event: CalendarEvent,
   prefs: NotificationPrefs,
   now: number,
   focused: boolean,
+  wall: Date = new Date(now),
 ): boolean {
   return (
-    event.start > now &&
+    meetingStage(event, now) !== null &&
     prefs.enabled &&
     prefs.accounts[event.account_id] !== false &&
     !(prefs.pausedUntil && prefs.pausedUntil > now) &&
     (!focused || prefs.whenFocused) &&
-    !inQuietHours(new Date(now), prefs.quiet)
+    !inQuietHours(wall, prefs.quiet)
   );
 }
 
@@ -81,13 +101,15 @@ export function meetingContent(
   now: number,
 ) {
   const minutes = Math.max(1, Math.ceil((event.start - now) / 60_000));
+  const starting = meetingStage(event, now) === "now";
   return {
     title:
       prefs.preview === "full"
         ? event.summary || "Untitled event"
         : "Upcoming event",
-    body:
-      prefs.preview === "none"
+    body: starting
+      ? "Starting now"
+      : prefs.preview === "none"
         ? "Your event starts soon."
         : `Starts in ${minutes} minute${minutes === 1 ? "" : "s"}`,
   };

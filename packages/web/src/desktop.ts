@@ -1,6 +1,7 @@
 import { mailStore } from "./store/mailStore";
 import { consumeAuthFragment } from "./sync/ConvexSync";
 import { desktopBridge } from "./lib/desktopBridge";
+import { attachCalendarWindow } from "./lib/calendarWindow";
 
 // What the web app does differently inside the desktop shell: deep links
 // (the sign-in result, mailto:, a notification click), the menu's navigation,
@@ -64,6 +65,8 @@ export function attachDesktop(): void {
   document.documentElement.classList.add("desktop");
 
   bridge.onDeepLink(handleUrl);
+  // The calendar is a window of its own here.
+  attachCalendarWindow();
   window.addEventListener("whisk-navigate", (e) => navigateTo((e as CustomEvent).detail));
   window.__WHISK_NEW_SESSION = () => {
     const s = mailStore.getState();

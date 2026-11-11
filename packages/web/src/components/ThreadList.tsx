@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMailStore, useTracked } from "../store/mailStore";
 import {
@@ -34,7 +34,15 @@ import { useCoarseNow } from "@mail/platform";
 import { threadPrivacy } from "@mail/shared/src/lib/privacy";
 import { HintPair } from "./KeyCap";
 import { DraftList } from "./DraftList";
-import { LensPanel, LensTabs } from "./Lenses";
+import { LensMenuItems, LensPanel, LensTabs, startMailDrag } from "./Lenses";
+import { PopMenu } from "./PopMenu";
+
+/** What a gesture on a row reaches: the selection when the row is in it,
+ *  else the row alone. */
+function rowGesture(t: Thread): string[] {
+  const selected = Object.keys(useMailStore.getState().selected);
+  return selected.includes(t._id) ? selected : [t._id];
+}
 import { TopicHead } from "./TopicHead";
 import { NavButton, SearchButton } from "./MobileNav";
 import { useNarrow } from "../lib/narrow";
@@ -125,8 +133,12 @@ const ThreadRow = React.memo(function ThreadRow({
   hue,
   score,
   isPrivate,
+  onMenu,
 }: {
   t: Thread;
+  /** Right-click: the place-in-a-view menu for this row (or the selection
+   *  it sits in). */
+  onMenu: (t: Thread, x: number, y: number) => void;
   /** Hidden from agents (lib/privacy). */
   isPrivate?: boolean;
   /** While a list is being tuned: this row's score on its lens. */
@@ -184,6 +196,12 @@ const ThreadRow = React.memo(function ThreadRow({
         if (e.metaKey || e.ctrlKey) useMailStore.getState().toggleSelect(t._id);
         else useMailStore.getState().openThread(t._id);
       }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onMenu(t, e.clientX, e.clientY);
+      }}
+      draggable
+      onDragStart={(e) => startMailDrag(e, rowGesture(t))}
       onMouseEnter={() => {
         // Hover moves nothing — the keyboard cursor is sovereign. Click selects.
       }}
@@ -296,6 +314,14 @@ export function ThreadList(): React.ReactElement {
   ]);
   const now = useCoarseNow(30_000);
   const parentRef = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<{ ids: string[]; x: number; y: number } | null>(null);
+  const openMenu = useCallback((t: Thread, x: number, y: number) => {
+    const ids = rowGesture(t);
+    // A row outside the selection becomes the cursor, like a click.
+    if (ids.length === 1) useMailStore.getState().focusThread(t._id);
+    setMenu({ ids, x, y });
+  }, []);
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   // While the search bar has text, the list live-filters on every keystroke —
   // instant, from the local index. Enter commits the view and adds the deep
@@ -477,6 +503,7 @@ export function ThreadList(): React.ReactElement {
                       showCategory={showCategory}
                       reminder={reminderFor(reminders, item.thread)}
                       topic={topicOf(item.thread)}
+                      onMenu={openMenu}
                       score={tuning ? (item.thread.lens_marks?.[tuning] !== undefined ? (item.thread.lens_marks[tuning] ? 100 : 0) : item.thread.lens_scores?.[tuning]) : undefined}
                     />
                   ) : item.kind === "section" ? (
@@ -507,6 +534,11 @@ export function ThreadList(): React.ReactElement {
             </div>
           )}
         </div>
+      )}
+      {menu && (
+        <PopMenu x={menu.x} y={menu.y} onClose={closeMenu}>
+          <LensMenuItems ids={menu.ids} onDone={closeMenu} />
+        </PopMenu>
       )}
       {selCount > 0 && (
         <div className="sel-bar">

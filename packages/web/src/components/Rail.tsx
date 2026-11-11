@@ -212,7 +212,7 @@ export function Rail(): React.ReactElement {
     (s) => s.reminders,
   ]);
   const topics = railTopics(s.threads, s.clusters, s.accountScope);
-  const [topicMenu, setTopicMenu] = useState<{ cluster: Cluster; x: number; y: number } | null>(null);
+  const [topicMenu, setTopicMenu] = useState<{ cluster: Cluster; threadIds: string[]; x: number; y: number } | null>(null);
 
   const accounts = orderedAccounts(s.accounts) as Account[];
   const primary = accounts[0];
@@ -346,7 +346,7 @@ export function Rail(): React.ReactElement {
               key={p.meta.id}
               className={`rail-item${s.activeView === p.meta.view ? " is-active" : ""}`}
               onClick={() => useMailStore.getState().setView(p.meta.view)}
-              onContextMenu={p.meta.cluster ? (e) => { e.preventDefault(); e.stopPropagation(); setTopicMenu({ cluster: p.meta.cluster!, x: e.clientX, y: e.clientY }); } : undefined}
+              onContextMenu={p.meta.cluster ? (e) => { e.preventDefault(); e.stopPropagation(); setTopicMenu({ cluster: p.meta.cluster!, threadIds: p.threads.map((t) => t._id), x: e.clientX, y: e.clientY }); } : undefined}
               title={`${p.meta.hint || p.meta.name}${s.accountScope === "all" && accounts.length > 1 ? ` · ${s.accounts[p.meta.cluster!.account_id]?.email ?? ""}` : ""}`}
               tabIndex={-1}
             >
@@ -357,7 +357,7 @@ export function Rail(): React.ReactElement {
               <span className="rail-item-count rail-lane-count">{p.unread > 0 ? p.unread : ""}</span>
             </button>
           ))}
-          {topicMenu && <TopicMenu cluster={topicMenu.cluster} x={topicMenu.x} y={topicMenu.y} onClose={() => setTopicMenu(null)} />}
+          {topicMenu && <TopicMenu cluster={topicMenu.cluster} threadIds={topicMenu.threadIds} x={topicMenu.x} y={topicMenu.y} onClose={() => setTopicMenu(null)} />}
         </div>
       )}
 

@@ -10,6 +10,7 @@ import { setAiClient } from "@mail/shared/src/store/aiBridge";
 import { mailStore, useTracked } from "../store/mailStore";
 import { MAIL_PLATFORM_CONFIG } from "../store/registry";
 import { setRemoteSearch } from "../store/searchBridge";
+import { setHeadersFetcher } from "@mail/shared/src/store/headersBridge";
 import type { Attachment } from "../store/types";
 import type { RemoteSearchPage } from "../store/searchBridge";
 import { authOrigin, desktopBridge } from "../lib/desktopBridge";
@@ -292,6 +293,12 @@ export function ConvexSync(): null {
         cursor: cursor ?? undefined,
       })) as RemoteSearchPage;
     });
+    setHeadersFetcher(async (messageGmailId) =>
+      await convexClient().action(api.gmail.attachments.messageHeaders, {
+        token: mailStore.getState().authToken ?? undefined,
+        messageGmailId,
+      }),
+    );
     // The store's AI gestures reach the model through this seam. Token is
     // read at call time, like remoteSearch.
     const tok = () => mailStore.getState().authToken ?? undefined;
@@ -325,6 +332,7 @@ export function ConvexSync(): null {
     return () => {
       window.removeEventListener("message", onMessage);
       setRemoteSearch(null);
+      setHeadersFetcher(null);
       setAiClient(null);
     };
   }, []);

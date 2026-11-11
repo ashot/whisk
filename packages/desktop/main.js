@@ -3,7 +3,7 @@
 // offline, updates itself from dl.whisk.email, and answers mailto: links.
 const fs = require("fs");
 const path = require("path");
-const { app, net, shell } = require("electron");
+const { app, net, screen, shell } = require("electron");
 const { createDesktopApp } = require("@platform/desktop");
 
 // The site as built at package time (electron-builder extraResources), the
@@ -85,6 +85,150 @@ async function fetchAttachment({ url, name, size }) {
   return { path: place.file, size: bytes.length };
 }
 
+// ── The calendar window ────────────────────────────────────────────────────
+// The calendar is a window of its own: a detached tab window on /#calendar,
+// keyed so asking again brings it forward. The web layer routes every way of
+// reaching the calendar here (lib/calendarWindow.ts), and an event to show
+// rides along: in the URL for a new window, as an event for an open one.
+function openCalendar(api, eventId) {
+  const id = typeof eventId === "string" && /^[\w-]+$/.test(eventId) ? eventId : null;
+  const opened = api.openTabWindow(`/${id ? `?event=${id}` : ""}#calendar`, { key: "calendar" });
+  if (opened && !opened.created && id) api.emit("calendar-open", id);
+}
+
+// ── The meeting card ───────────────────────────────────────────────────────
+// A meeting about to start shows as a card floating over every app, Space and
+// full-screen window, top right of the screen the pointer is on, with its
+// sound. It stays until joined, opened or dismissed, so it is hard to miss.
+// The web layer decides when a meeting alerts and sends each stage once
+// ("soon", then "now" as it starts); "now" comes back even after a dismissed
+// "soon", unless the meeting was joined. The card page is the site's
+// /meeting-alert/ (packages/web/src/meetingAlert).
+const CARD_WIDTH = 380;
+const CARD_MARGIN = 6;
+const alerts = new Map(); // meeting key → payload, in arrival order
+const joined = new Map(); // meeting key → end, so a joined meeting stays quiet
+let card = null;
+let cardReady = false;
+let pendingChime = null;
+
+function cleanAlert(p) {
+  if (!p || typeof p.key !== "string" || (p.stage !== "soon" && p.stage !== "now")) return null;
+  const num = (n) => (Number.isFinite(n) ? Number(n) : null);
+  const str = (v) => (typeof v === "string" && v ? v.slice(0, 300) : null);
+  const join = str(p.join);
+  const color = str(p.color);
+  if (num(p.start) === null || num(p.end) === null) return null;
+  return {
+    key: p.key.slice(0, 300),
+    stage: p.stage,
+    eventId: str(p.eventId),
+    title: str(p.title) ?? "Upcoming event",
+    start: num(p.start),
+    end: num(p.end),
+    join: join && /^https?:\/\//i.test(join) ? join : null,
+    where: str(p.where),
+    color: color && /^#[0-9a-f]{3,8}$/i.test(color) ? color : null,
+    sound: p.sound !== false,
+  };
+}
+
+function placeCard(height) {
+  if (!card || card.isDestroyed()) return;
+  const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const h = Math.max(80, Math.min(Math.round(height || 200), workArea.height - 2 * CARD_MARGIN));
+  card.setBounds({ x: workArea.x + workArea.width - CARD_WIDTH - CARD_MARGIN, y: workArea.y + CARD_MARGIN, width: CARD_WIDTH, height: h });
+}
+
+function cardState(chime = null) {
+  return { alerts: [...alerts.values()], chime };
+}
+
+function refreshCard(api, chime) {
+  if (alerts.size === 0) {
+    if (card && !card.isDestroyed()) card.close();
+    return;
+  }
+  if (!card || card.isDestroyed()) {
+    cardReady = false;
+    pendingChime = chime;
+    card = api.openWindow({
+      path: "/meeting-alert/",
+      width: CARD_WIDTH,
+      height: 200,
+      minWidth: CARD_WIDTH,
+      minHeight: 80,
+      resizable: false,
+      backgroundColor: "#00000000",
+      showInactive: true,
+      window: {
+        type: "panel",
+        frame: false,
+        transparent: true,
+        hasShadow: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        acceptFirstMouse: true,
+      },
+    });
+    card.setWindowButtonVisibility?.(false);
+    card.setAlwaysOnTop(true, "screen-saver");
+    card.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+    placeCard(200);
+    card.on("closed", () => {
+      card = null;
+      cardReady = false;
+    });
+    return;
+  }
+  if (!card.isVisible()) card.showInactive();
+  if (cardReady) api.emit("meeting-alerts", cardState(chime));
+  else pendingChime = chime ?? pendingChime;
+}
+
+function showMeetingAlert(payload, api) {
+  const alert = cleanAlert(payload);
+  if (!alert || joined.has(alert.key)) return { shown: false };
+  const before = alerts.get(alert.key);
+  if (before && before.stage === alert.stage) return { shown: true };
+  alerts.delete(alert.key); // re-inserted last: the newest stage on the bottom
+  alerts.set(alert.key, alert);
+  refreshCard(api, alert.sound ? alert.stage : null);
+  // Starting now: the Dock icon jumps once as well.
+  if (alert.stage === "now") app.dock?.bounce("informational");
+  return { shown: true };
+}
+
+function meetingAction({ key, action } = {}, api) {
+  const alert = alerts.get(key);
+  if (!alert) return;
+  if (action === "join" && alert.join) {
+    joined.set(key, alert.end);
+    void shell.openExternal(alert.join);
+  } else if (action === "open") {
+    openCalendar(api, alert.eventId);
+  } else if (action !== "dismiss") return;
+  alerts.delete(key);
+  refreshCard(api, null);
+}
+
+// A card nobody acted on leaves ten minutes into the meeting.
+function sweepAlerts(api) {
+  const now = Date.now();
+  let changed = false;
+  for (const [key, a] of alerts) {
+    if (now > Math.min(a.end, a.start + 10 * 60_000)) {
+      alerts.delete(key);
+      changed = true;
+    }
+  }
+  for (const [key, end] of joined) if (now > end) joined.delete(key);
+  if (changed) refreshCard(api, null);
+}
+
 createDesktopApp({
   productName: "Whisk",
   appId: "email.whisk.desktop",
@@ -103,6 +247,8 @@ createDesktopApp({
   menu: {
     navItems: [
       { label: "Inbox", path: "/#inbox" },
+      // The web layer opens the calendar window for this path.
+      { label: "Calendar", path: "/#calendar" },
       { label: "Starred", path: "/#starred" },
       { label: "Sweep", path: "/#sweep" },
       { label: "Sent", path: "/#sent" },
@@ -147,13 +293,29 @@ createDesktopApp({
       "attachment-reveal": (p) => shell.showItemInFolder(insideRoot(p)),
       "attachment-open": (p) => shell.openPath(insideRoot(p)),
       "attachment-quicklook": (p, name, api) => api.getMainWindow()?.previewFile(insideRoot(p), String(name ?? "")),
+      "calendar-window": (eventId, api) => openCalendar(api, eventId),
+      // The calendar window sends mail and other views here.
+      "main-window": (navPath, api) => {
+        if (typeof navPath === "string" && navPath.startsWith("/") && !navPath.startsWith("//")) api.navigateMain(navPath);
+      },
+      "meeting-alert": (payload, api) => showMeetingAlert(payload, api),
+      "meeting-alert-action": (args, api) => meetingAction(args, api),
+      "meeting-alert-state": () => {
+        cardReady = true;
+        const state = cardState(pendingChime);
+        pendingChime = null;
+        return state;
+      },
+      "meeting-alert-size": (height) => placeCard(Number(height)),
     },
+    events: ["calendar-open", "meeting-alerts"],
   },
   hooks: {
     // macOS asks for notification permission the first time an app posts one;
     // ask up front, not the first time mail happens to arrive.
     onReady: (api, { firstRun }) => {
       if (firstRun) api.showNotification("Whisk is ready", "New mail lands here. Press ? in Whisk for every key.");
+      setInterval(() => sweepAlerts(api), 30_000);
     },
   },
 });

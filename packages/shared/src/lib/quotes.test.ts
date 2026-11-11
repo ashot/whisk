@@ -61,6 +61,15 @@ describe("newContent", () => {
     expect(newContent("Yes.\n-- \nsig")).toBe("Yes.");
     expect(newContent("See below\n———— Forwarded message ————\nstuff")).toBe("See below");
   });
+
+  test("drops a closing and the name under it", () => {
+    expect(newContent("Sure thing! Ill do that\n\n\nThank You and Regards\nSrishti Raha\n\nOn Sun, 8 Nov 2026 at 1:37 am, Samvit <s@u.app> wrote:\n> Hey")).toBe("Sure thing! Ill do that");
+    expect(newContent("Works for me.\n\nBest,\nAda")).toBe("Works for me.");
+    expect(newContent("Booked Saturday.\n\nThanks,\nSrishti\n\n\n\nThank You and Regards\nSrishti Raha")).toBe("Booked Saturday.");
+    expect(newContent("On my way\n\nSent from my iPhone")).toBe("On my way");
+    expect(newContent("Thanks!")).toBe("Thanks!");
+    expect(newContent("Can you send the deck?\nThe one from Tuesday, with the revenue slide.")).toBe("Can you send the deck?\nThe one from Tuesday, with the revenue slide.");
+  });
 });
 
 describe("writtenPart", () => {

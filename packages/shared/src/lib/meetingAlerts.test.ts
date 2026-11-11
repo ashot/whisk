@@ -4,6 +4,7 @@ import {
   meetingContent,
   meetingKey,
   meetingPreferences,
+  meetingStage,
   shouldAlertMeeting,
   upcomingMeetings,
 } from "./meetingAlerts";
@@ -51,14 +52,31 @@ describe("meeting reminders", () => {
     expect(candidates([{ ...event, start: now + 300_001 }])).toEqual([]);
     expect(candidates([{ ...event, start: now - 1000 }])).toHaveLength(1);
     expect(candidates([{ ...event, end: now }])).toEqual([]);
+    // Started two minutes ago or more: nothing left to announce.
     expect(
       shouldAlertMeeting(
-        { ...event, start: now },
+        { ...event, start: now - 120_000 },
         normalizePrefs({}),
         now,
         false,
       ),
     ).toBe(false);
+  });
+  test("two stages: soon in the lead window, now from half a minute before to two after", () => {
+    expect(meetingStage(event, now)).toBe("soon");
+    expect(meetingStage({ ...event, start: now + 31_000 }, now)).toBe("soon");
+    expect(meetingStage({ ...event, start: now + 30_000 }, now)).toBe("now");
+    expect(meetingStage({ ...event, start: now - 119_000 }, now)).toBe("now");
+    expect(meetingStage({ ...event, start: now - 120_000 }, now)).toBe(null);
+    const prefs = normalizePrefs({});
+    expect(shouldAlertMeeting({ ...event, start: now }, prefs, now, false)).toBe(true);
+    expect(meetingContent({ ...event, start: now }, prefs, now).body).toBe("Starting now");
+    expect(meetingContent(event, { ...prefs, preview: "full" }, now)).toEqual({ title: "Private review", body: "Starts in 5 minutes" });
+  });
+  test("quiet hours read the person's own clock when one is given", () => {
+    const prefs = normalizePrefs({ quiet: { enabled: true, from: "22:00", to: "07:00" } });
+    expect(shouldAlertMeeting(event, prefs, now, false)).toBe(true);
+    expect(shouldAlertMeeting(event, prefs, now, false, new Date(2026, 8, 4, 23))).toBe(false);
   });
   test("excludes all-day, cancelled, declined, removed and hidden sources", () => {
     for (const patch of [

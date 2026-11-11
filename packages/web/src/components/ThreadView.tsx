@@ -2,50 +2,66 @@ import { LensChips } from "./Lenses";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useMailStore, useTracked } from "../store/mailStore";
 import { msgExpandedDefault, shownTopic, threadDrafts } from "../store/selectors";
-import type { Address, Draft, Message } from "../store/types";
-import { displayName, fullDate, initials, recipientsLine, relativeDate, senderHue } from "../lib/format";
+import type { Draft, Message } from "../store/types";
+import { addressRows, displayName, fullDate, initials, recipientsLine, relativeDate, senderHue } from "../lib/format";
 import { isOwnAddress, type Sender } from "@mail/shared/src/lib/sendAs";
 import { preloadAttachments } from "../lib/attachmentFiles";
 import { AttachmentChips } from "./Attachments";
 import { HtmlBody } from "./HtmlBody";
 import { QuotedFold } from "./QuotedFold";
 import { splitQuotedText } from "@mail/shared/src/lib/quotes";
+import { headersText, useMessageHeaders } from "@mail/shared/src/store/headersBridge";
 import { Compose, composeIsInline } from "./Compose";
 import { HintPair } from "./KeyCap";
 import { ThreadActions } from "./MobileNav";
 import { PrivacyChip } from "./PrivacyChip";
 
-function MessageDetails({ m }: { m: Message }): React.ReactElement {
-  const row = (label: string, people: Address[]) => {
-    if (people.length === 0) return null;
-    return (
+/** The message's whole header block, as Gmail holds it, behind a toggle. */
+function AllHeaders({ gmailId }: { gmailId: string }): React.ReactElement {
+  const [state, toggle] = useMessageHeaders(gmailId);
+  const open = state.status === "open";
+  return (
+    <>
       <div className="msg-detail-row">
-        <span className="msg-detail-label">{label}</span>
+        <span />
         <span className="msg-detail-value">
-          {people.map((a, i) => (
-            <span key={`${a.email}-${i}`}>
-              {i > 0 ? ", " : ""}
-              {a.name ? <span className="msg-detail-name">{a.name} </span> : null}
-              <a className="msg-detail-email" href={`mailto:${a.email}`}>
-                {a.name ? `<${a.email}>` : a.email}
-              </a>
-            </span>
-          ))}
+          <button type="button" className="msg-headers-toggle" aria-expanded={open} onClick={toggle}>
+            {open ? "Hide all headers" : state.status === "loading" ? "Loading headers…" : "All headers"}
+          </button>
+          {state.status === "error" && (
+            <span className="msg-headers-error">{navigator.onLine ? "Couldn't load" : "Offline"}</span>
+          )}
         </span>
       </div>
-    );
-  };
+      {open && <pre className="msg-headers">{headersText(state.headers)}</pre>}
+    </>
+  );
+}
+
+function MessageDetails({ m }: { m: Message }): React.ReactElement {
   return (
     <div className="msg-details">
-      {row("From", [m.from])}
-      {row("To", m.to)}
-      {row("Cc", m.cc ?? [])}
-      {row("Bcc", m.bcc ?? [])}
-      {m.reply_to ? row("Reply-To", [m.reply_to]) : null}
+      {addressRows(m).map(({ label, people }) => (
+        <div key={label} className="msg-detail-row">
+          <span className="msg-detail-label">{label}</span>
+          <span className="msg-detail-value">
+            {people.map((a, i) => (
+              <span key={`${a.email}-${i}`}>
+                {i > 0 ? ", " : ""}
+                {a.name ? <span className="msg-detail-name">{a.name} </span> : null}
+                <a className="msg-detail-email" href={`mailto:${a.email}`}>
+                  {a.name ? `<${a.email}>` : a.email}
+                </a>
+              </span>
+            ))}
+          </span>
+        </div>
+      ))}
       <div className="msg-detail-row">
         <span className="msg-detail-label">Date</span>
         <span className="msg-detail-value">{fullDate(m.date)}</span>
       </div>
+      <AllHeaders gmailId={m.gmail_id} />
     </div>
   );
 }
@@ -115,20 +131,21 @@ function MessageCard({
           <span className="msg-from-name" title={m.from.email}>
             {displayName(m.from, me)}
           </span>
-          {toLine && (
-            <button
-              type="button"
-              className={`msg-to-inline${details ? " is-open" : ""}`}
-              aria-expanded={details}
-              title={details ? "Hide full addresses" : "Show full addresses"}
-              onClick={(e) => {
-                e.stopPropagation();
-                setDetails((open) => !open);
-              }}
-            >
-              {toLine}
-            </button>
-          )}
+          <button
+            type="button"
+            className={`msg-to-inline${details ? " is-open" : ""}`}
+            aria-expanded={details}
+            title={details ? "Hide details" : "Show addresses and headers"}
+            onClick={(e) => {
+              e.stopPropagation();
+              setDetails((open) => !open);
+            }}
+          >
+            {toLine ?? "to undisclosed recipients"}
+            <span className="msg-to-caret" aria-hidden>
+              ▾
+            </span>
+          </button>
         </div>
         <time className="msg-date" title={fullDate(m.date)}>
           {relativeDate(m.date)}

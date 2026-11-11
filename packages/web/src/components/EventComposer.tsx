@@ -3,6 +3,7 @@ import {
   addCalendarDays,
   calendarGuests,
   calendarKey,
+  eventDuration,
   localDayKey,
   localTimeInput,
 } from "@mail/shared/src/lib/calendar";
@@ -18,8 +19,17 @@ import {
   calendarWrite,
   calendarWriteMessage,
 } from "../lib/calendarClient";
-import { calendarEditPatch, calendarFormSchedule } from "../lib/calendarForm";
-import { CalendarDialog, useCalendarConfirmationFocus } from "./CalendarDialog";
+import {
+  calendarEditPatch,
+  calendarFormSchedule,
+  formLength,
+  moveFormStart,
+} from "../lib/calendarForm";
+import {
+  CalendarDialog,
+  CloseIcon,
+  useCalendarConfirmationFocus,
+} from "./CalendarDialog";
 
 type Props = {
   calendars: Calendar[];
@@ -73,6 +83,21 @@ export function EventComposer({
   const busyRef = useRef(false);
   const clientId = useRef(crypto.randomUUID());
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
+  const preview = calendarFormSchedule(form, initial, event);
+  const length =
+    !form.allDay && preview.end > preview.start ? eventDuration(preview) : null;
+  // The last complete length, so typing through a half-filled start time
+  // still carries the end along.
+  const lastLength = useRef(formLength(initial));
+  const lengthMode = useRef(initial.allDay);
+  const currentLength = formLength(form);
+  if (
+    lengthMode.current !== form.allDay ||
+    (Number.isFinite(currentLength) && currentLength >= (form.allDay ? 0 : 1))
+  ) {
+    lastLength.current = currentLength;
+    lengthMode.current = form.allDay;
+  }
   const field = <K extends keyof typeof form>(
     key: K,
     value: (typeof form)[K],
@@ -170,10 +195,19 @@ export function EventComposer({
       title={event ? "Edit event" : "New event"}
       onDismiss={dismiss}
     >
-      <form className="calendar-form" onSubmit={submit}>
+      <form
+        className="calendar-form"
+        onSubmit={submit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            e.currentTarget.requestSubmit();
+          }
+        }}
+      >
         <header className="calendar-dialog-head">
-          <span className="calendar-eyebrow">
-            {event ? "Edit event" : "Make time"}
+          <span className="calendar-dialog-source">
+            {event ? "Edit event" : "New event"}
           </span>
           <button
             type="button"
@@ -182,7 +216,7 @@ export function EventComposer({
             disabled={busy}
             onClick={dismiss}
           >
-            ×
+            <CloseIcon />
           </button>
         </header>
         <fieldset disabled={busy}>
@@ -200,32 +234,34 @@ export function EventComposer({
               onChange={(e) => field("title", e.target.value)}
             />
           </label>
-          <label className="calendar-field">
-            <span>Calendar</span>
-            <select
-              aria-label="Calendar"
-              disabled={!!event}
-              value={form.calendar}
-              onChange={(e) => field("calendar", e.target.value)}
-            >
-              {calendars.map((row) => (
-                <option
-                  key={row._id}
-                  value={calendarKey(row.account_id, row.google_id)}
-                >
-                  {row.summary} · {accounts[row.account_id]?.email}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="calendar-check">
-            <input
-              type="checkbox"
-              checked={form.allDay}
-              onChange={(e) => field("allDay", e.target.checked)}
-            />
-            All day
-          </label>
+          <div className="calendar-row">
+            <label className="calendar-field">
+              <span>Calendar</span>
+              <select
+                aria-label="Calendar"
+                disabled={!!event}
+                value={form.calendar}
+                onChange={(e) => field("calendar", e.target.value)}
+              >
+                {calendars.map((row) => (
+                  <option
+                    key={row._id}
+                    value={calendarKey(row.account_id, row.google_id)}
+                  >
+                    {row.summary} · {accounts[row.account_id]?.email}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="calendar-check">
+              <input
+                type="checkbox"
+                checked={form.allDay}
+                onChange={(e) => field("allDay", e.target.checked)}
+              />
+              All day
+            </label>
+          </div>
           <div className="calendar-time-fields">
             <label className="calendar-field">
               <span>Starts</span>
@@ -235,12 +271,11 @@ export function EventComposer({
                 required
                 value={form.startDay}
                 onChange={(e) => {
-                  const day = e.target.value;
-                  setForm((current) => ({
-                    ...current,
-                    startDay: day,
-                    endDay: current.endDay < day ? day : current.endDay,
-                  }));
+                  const startDay = e.target.value;
+                  setForm((current) =>
+                    moveFormStart(current, { startDay }, lastLength.current),
+                  );
+                  setError("");
                 }}
               />
             </label>
@@ -252,12 +287,28 @@ export function EventComposer({
                   aria-label="Start time"
                   required
                   value={form.startTime}
-                  onChange={(e) => field("startTime", e.target.value)}
+                  onChange={(e) => {
+                    const startTime = e.target.value;
+                    setForm((current) =>
+                      moveFormStart(
+                        current,
+                        {
+                          startDay: current.startDay,
+                          startTime,
+                        },
+                        lastLength.current,
+                      ),
+                    );
+                    setError("");
+                  }}
                 />
               </label>
             )}
             <label className="calendar-field">
-              <span>{form.allDay ? "Last day" : "Ends"}</span>
+              <span>
+                {form.allDay ? "Last day" : "Ends"}
+                {length && <small>{length}</small>}
+              </span>
               <input
                 type="date"
                 aria-label="End date"
@@ -363,6 +414,7 @@ export function EventComposer({
             disabled={busy}
           >
             {busy ? "Saving…" : event ? "Save changes" : "Create event"}
+            <kbd aria-hidden>⌘↵</kbd>
           </button>
         </footer>
       </form>

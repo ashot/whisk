@@ -8,6 +8,10 @@ import { mailReader, readerFor } from "../lib/privacy";
 // beside the whole-thread summary. The model call lives in ai/actions.ts
 // (Node runtime).
 
+/** Earlier messages a `latest` summary reads to know what the new one
+ *  answers ("Sure, I'll do that" means nothing alone). */
+const LATEST_CONTEXT = 3;
+
 export const summaryContext = internalQuery({
   args: {
     token: v.optional(v.string()),
@@ -42,7 +46,8 @@ export const summaryContext = internalQuery({
       const hit = latest
         ? cached?.latest_message_count === thread.message_count && cached.latest_summary
         : cached?.message_count === thread.message_count && cached.summary;
-      if (hit) return { account_id: account._id, cached: hit, messages: [] };
+      const owner = { name: account.name, email: account.email };
+      if (hit) return { account_id: account._id, owner, cached: hit, messages: [], earlier: [] };
 
       const rows = await ctx.db
         .query("messages")
@@ -51,19 +56,18 @@ export const summaryContext = internalQuery({
         )
         .order("asc")
         .collect();
-      const live = rows.filter((m) => !m.deleted);
+      const live = rows
+        .filter((m) => !m.deleted)
+        .map((m) => ({ from: m.from, date: m.date, body_text: m.body_text, snippet: m.snippet }));
       return {
         account_id: account._id,
+        owner,
         cached: null,
         message_count: thread.message_count,
         subject: thread.subject,
-        messages: (latest ? live.slice(-1) : live)
-          .map((m) => ({
-            from: m.from,
-            date: m.date,
-            body_text: m.body_text,
-            snippet: m.snippet,
-          })),
+        messages: latest ? live.slice(-1) : live,
+        /** With `latest`: the messages before it, which say what it answers. */
+        earlier: latest ? live.slice(-1 - LATEST_CONTEXT, -1) : [],
       };
     }
     throw new Error("Thread not found");

@@ -2,6 +2,9 @@ import React, { useRef, useState } from "react";
 import {
   editableEvent,
   eventDuration,
+  eventRelative,
+  locationLabel,
+  meetingProvider,
   safeCalendarUrl,
   writableCalendar,
 } from "@mail/shared/src/lib/calendar";
@@ -17,7 +20,11 @@ import {
   calendarWrite,
   calendarWriteMessage,
 } from "../lib/calendarClient";
-import { CalendarDialog, useCalendarConfirmationFocus } from "./CalendarDialog";
+import {
+  CalendarDialog,
+  CloseIcon,
+  useCalendarConfirmationFocus,
+} from "./CalendarDialog";
 
 export function EventDetail({
   event,
@@ -44,6 +51,22 @@ export function EventDetail({
     !event.organizer?.self &&
     event.attendees.some((guest) => guest.self && !guest.organizer);
   const join = safeCalendarUrl(event.conference_url);
+  const relative = eventRelative(event);
+  const locationUrl = safeCalendarUrl(event.location?.trim());
+  const replies = event.attendees.reduce(
+    (count, guest) => {
+      const key = (guest.response_status ??
+        "needsAction") as keyof typeof count;
+      if (key in count) count[key] += 1;
+      return count;
+    },
+    { accepted: 0, tentative: 0, declined: 0, needsAction: 0 },
+  );
+  const guests = [...event.attendees].sort(
+    (a, b) =>
+      Number(!!b.organizer) - Number(!!a.organizer) ||
+      Number(!!b.self) - Number(!!a.self),
+  );
   const provider = safeCalendarUrl(event.html_link);
   const date = new Intl.DateTimeFormat(undefined, {
     weekday: "long",
@@ -82,7 +105,7 @@ export function EventDetail({
               : "Deletion queued for Google Calendar"
             : action === "retryCalendarWrites"
               ? "Retrying calendar changes"
-              : calendarWriteMessage(account._id),
+              : calendarWriteMessage(account._id, "Reply"),
         );
       if (action === "deleteEvent") onClose();
     } catch (failure) {
@@ -104,12 +127,13 @@ export function EventDetail({
     >
       <div className="calendar-detail">
         <header className="calendar-dialog-head">
-          <span className="calendar-eyebrow">
+          <span className="calendar-dialog-source">
             <i
               className="calendar-dot"
               style={{ backgroundColor: calendar.color || "var(--m-accent)" }}
             />
             {calendar.summary}
+            {!writableCalendar(calendar) && <small>Read-only</small>}
           </span>
           <button
             className="calendar-icon-button"
@@ -117,7 +141,7 @@ export function EventDetail({
             disabled={busy}
             onClick={onClose}
           >
-            ×
+            <CloseIcon />
           </button>
         </header>
         <h2>{event.summary || "Untitled event"}</h2>
@@ -128,16 +152,19 @@ export function EventDetail({
           </p>
           <p>
             {event.all_day
-              ? "All day"
-              : `${clock.format(event.start)} – ${clock.format(event.end)} · ${eventDuration(event)}`}
+              ? sameDay
+                ? "All day"
+                : `All day · ${Math.round((event.end - event.start) / 86400000)} days`
+              : `${clock.format(event.start)} – ${clock.format(event.end)}`}
+            {!event.all_day && <small>{eventDuration(event)}</small>}
+            {relative && (
+              <b
+                className={`calendar-tag${relative.startsWith("Now") ? " is-now" : ""}`}
+              >
+                {relative}
+              </b>
+            )}
           </p>
-          {!event.all_day && (
-            <small>
-              {Intl.DateTimeFormat()
-                .resolvedOptions()
-                .timeZone.replaceAll("_", " ")}
-            </small>
-          )}
         </div>
         {event.pending_outbound && (
           <p className="calendar-pending" role="status">
@@ -157,19 +184,41 @@ export function EventDetail({
           </div>
         )}
         {join && (
-          <a
-            className="calendar-button is-primary calendar-join"
-            href={join}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Join meeting <span aria-hidden>↗</span>
-          </a>
+          <div className="calendar-join-row">
+            <a
+              className="calendar-button is-primary calendar-join"
+              href={join}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Join {meetingProvider(join) ?? "meeting"}
+              <span aria-hidden>↗</span>
+            </a>
+            <button
+              className="calendar-button is-quiet"
+              onClick={() =>
+                void navigator.clipboard.writeText(join).then(
+                  () => mailStore.getState().pushToast("Meeting link copied"),
+                  () =>
+                    mailStore
+                      .getState()
+                      .pushToast("Couldn’t copy the link", "error"),
+                )
+              }
+            >
+              Copy link
+            </button>
+          </div>
         )}
         {canRespond && (
           <section className="calendar-response" aria-label="Your response">
-            <span>Going?</span>
-            <div>
+            <span>
+              Going?
+              {(!event.my_response || event.my_response === "needsAction") && (
+                <b className="calendar-tag is-response">Reply needed</b>
+              )}
+            </span>
+            <div className="calendar-segmented">
               {(
                 [
                   ["accepted", "Yes"],
@@ -179,7 +228,9 @@ export function EventDetail({
               ).map(([response, label]) => (
                 <button
                   key={response}
-                  className={`calendar-button${event.my_response === response ? " is-selected" : ""}`}
+                  className={
+                    event.my_response === response ? "is-selected" : ""
+                  }
                   aria-pressed={event.my_response === response}
                   disabled={busy}
                   onClick={() => void run("rsvpEvent", response)}
@@ -190,10 +241,28 @@ export function EventDetail({
             </div>
           </section>
         )}
-        {event.location && (
+        {event.location && locationUrl !== join && (
           <section className="calendar-detail-section">
             <h3>Location</h3>
-            <p>{event.location}</p>
+            <p>
+              {locationUrl ? (
+                <a href={locationUrl} target="_blank" rel="noreferrer">
+                  {locationLabel(event.location)} ↗
+                </a>
+              ) : (
+                <>
+                  {event.location}{" "}
+                  <a
+                    className="calendar-detail-link"
+                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Map ↗
+                  </a>
+                </>
+              )}
+            </p>
           </section>
         )}
         {event.description && (
@@ -207,36 +276,47 @@ export function EventDetail({
             <h3>
               {event.attendees.length}{" "}
               {event.attendees.length === 1 ? "guest" : "guests"}
+              <span>
+                {[
+                  replies.accepted && `${replies.accepted} yes`,
+                  replies.tentative && `${replies.tentative} maybe`,
+                  replies.declined && `${replies.declined} no`,
+                  replies.needsAction && `${replies.needsAction} awaiting`,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
             </h3>
             <ul className="calendar-guests">
-              {event.attendees.map((guest) => (
-                <li key={guest.email}>
-                  <span>
-                    {guest.self ? "You" : guest.name || guest.email}
-                    {guest.organizer && <small> · organizer</small>}
-                  </span>
-                  <span
-                    className={`calendar-rsvp is-${guest.response_status ?? "needsAction"}`}
-                  >
-                    {(
-                      {
-                        accepted: "Accepted",
-                        declined: "Declined",
-                        tentative: "Maybe",
-                        needsAction: "Awaiting reply",
-                      } as Record<string, string>
-                    )[guest.response_status ?? "needsAction"] ??
-                      "Awaiting reply"}
-                  </span>
-                </li>
-              ))}
+              {guests.map((guest) => {
+                const status = guest.response_status ?? "needsAction";
+                return (
+                  <li key={guest.email}>
+                    <i
+                      className={`calendar-rsvp-mark is-${status}`}
+                      aria-hidden
+                    />
+                    <span title={guest.email}>
+                      {guest.self ? "You" : guest.name || guest.email}
+                      {guest.organizer && <small>Organizer</small>}
+                      {guest.optional && <small>Optional</small>}
+                    </span>
+                    <span className={`calendar-rsvp is-${status}`}>
+                      {(
+                        {
+                          accepted: "Yes",
+                          declined: "No",
+                          tentative: "Maybe",
+                        } as Record<string, string>
+                      )[status] ?? "Awaiting"}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           </section>
         )}
-        <p className="calendar-detail-account">
-          {account.email}
-          {!writableCalendar(calendar) && " · read-only"}
-        </p>
+        <p className="calendar-detail-account">{account.email}</p>
         {error && (
           <p className="calendar-error" role="alert">
             {error}
@@ -295,8 +375,7 @@ export function EventDetail({
         ) : null}
         {(event.recurring || event.recurring_event_id) && (
           <p className="calendar-field-note">
-            This event repeats. Edit the series or an occurrence in Google
-            Calendar.
+            Repeating event. Change the series in Google Calendar.
           </p>
         )}
       </div>
