@@ -247,6 +247,7 @@ export function Rail(): React.ReactElement {
     { view: "drafts", name: "Drafts", keys: "g d", count: draftCount },
     { view: "sent", name: "Sent", keys: "g t" },
     { view: "archive", name: "Archive", keys: "g a" },
+    { view: "all", name: "All Mail", keys: "g m" },
     { view: "trash", name: "Trash" },
     { view: "spam", name: "Spam" },
   ];

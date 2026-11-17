@@ -58,7 +58,7 @@ the human's inbox.
 # Orientation
 whisk status                       # accounts, sync state, writes still on the way
 whisk ls                           # inbox, newest first (-n 500, --unread, --since 3d, --from ada)
-whisk ls starred|sent|archive|trash|later|waiting
+whisk ls starred|sent|archive|all|trash|later|waiting
 whisk ls newsletters               # a lane: newsletters, notifications, receipts, travel, calendar, promotions, security, social, primary
 whisk ls label:Clients             # a Gmail label
 whisk lanes                        # inbox counts per lane

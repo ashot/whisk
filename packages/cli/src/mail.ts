@@ -191,6 +191,7 @@ export function gmailQueryForList(opts: ListOptions): string | null {
     starred: "is:starred",
     sent: "in:sent",
     archive: "-in:inbox -in:drafts",
+    all: "-in:drafts",
     trash: "in:trash",
     spam: "in:spam",
   };
@@ -219,9 +220,9 @@ export function resolveView(name: string | undefined, labels: Label[], lenses: L
   const lower = raw.toLowerCase();
   const lens = lenses.find((l) => l.name.toLowerCase() === lower || l.id === lower);
   if (lens) return lens.id === IMPORTANT ? "inbox" : `lens:${lens.id}`;
-  const plain: ViewId[] = ["inbox", "other", "starred", "sent", "archive", "trash", "spam", "later", "waiting"];
+  const plain: ViewId[] = ["inbox", "other", "starred", "sent", "archive", "all", "trash", "spam", "later", "waiting"];
   if ((plain as string[]).includes(lower)) return lower as ViewId;
-  if (lower === "all" || lower === "everything") return "archive"; // closest: not inbox, not trash
+  if (lower === "everything" || lower === "allmail" || lower === "all mail") return "all";
   if (lower === "snoozed") return "later";
   if (lower === "important") return "inbox";
   if (lower === "primary" || isCategoryId(lower)) return `cat:${lower}`;
@@ -235,7 +236,7 @@ export function resolveView(name: string | undefined, labels: Label[], lenses: L
   if (label) return `label:${label.gmail_id}`;
   if (lower.startsWith("label:")) throw new Error(`No label "${labelName}". See: whisk labels`);
   throw new Error(
-    `Unknown view "${raw}". Views: inbox (the important mail), other (the rest of the inbox), a view by name (whisk views), starred, sent, archive, trash, spam, later, waiting, a lane (newsletters, receipts, …) or a label name.`,
+    `Unknown view "${raw}". Views: inbox (the important mail), other (the rest of the inbox), a view by name (whisk views), starred, sent, archive, all, trash, spam, later, waiting, a lane (newsletters, receipts, …) or a label name.`,
   );
 }
 

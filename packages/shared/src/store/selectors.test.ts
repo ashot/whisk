@@ -38,6 +38,15 @@ describe("threadInView", () => {
     expect(threadInView(thread([L.TRASH]), "archive")).toBe(false);
   });
 
+  test("all mail is everything outside trash and spam, lenses and lanes aside", () => {
+    expect(threadInView(thread([L.INBOX]), "all")).toBe(true);
+    expect(threadInView({ ...thread([L.INBOX]), category: "newsletters" }, "all")).toBe(true);
+    expect(threadInView(thread([]), "all")).toBe(true);
+    expect(threadInView(thread([L.SENT]), "all")).toBe(true);
+    expect(threadInView(thread([L.INBOX, L.TRASH]), "all")).toBe(false);
+    expect(threadInView(thread([L.SPAM]), "all")).toBe(false);
+  });
+
   test("trash shows trashed threads regardless of other labels", () => {
     expect(threadInView(thread([L.TRASH, L.INBOX]), "trash")).toBe(true);
   });

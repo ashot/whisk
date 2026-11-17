@@ -250,6 +250,7 @@ export type ViewId =
   | "drafts"
   | "sent"
   | "archive"
+  | "all"
   | "trash"
   | "spam"
   | "sweep"

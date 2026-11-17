@@ -321,7 +321,7 @@
 
 /* While mail is dragged the tabs read as places to drop it; the one under
    the pointer lights up. */
-.is-dragging-mail .lens-tab:not([aria-selected="true"]) {
+.is-dragging-mail .lens-tab:not([aria-selected="true"]):not(.no-drop) {
   outline: 1px dashed var(--m-rule-strong);
   outline-offset: 4px;
   border-radius: 4px;

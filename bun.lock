@@ -16,6 +16,7 @@
         "@mail/shared": "workspace:*",
         "@platform/auth": "file:../../platform/packages/auth",
         "@platform/cli-kit": "file:../../platform/packages/cli-kit",
+        "@platform/fence": "file:../../platform/packages/fence",
         "@platform/snippets": "file:../../platform/packages/snippets",
         "commander": "^12.1.0",
         "convex": "^1.31.6",
@@ -2155,6 +2156,8 @@
     "@mail/cli/@platform/auth": ["@platform/auth@file:platform/packages/auth", { "devDependencies": { "@auth/core": "^0.37.2", "@convex-dev/auth": "0.0.79", "@types/bun": "latest", "@types/node": "^22.0.0", "@types/react": "^19.0.0", "convex": "^1.31.6", "jose": "5.10.0", "oslo": "^1.2.1", "react": "19.1.0", "typescript": "^5.7.2" }, "peerDependencies": { "@auth/core": "^0.37.2", "@convex-dev/auth": "0.0.79", "convex": "^1.31.6", "jose": "5.10.0", "oslo": "^1.2.1", "react": "^19.0.0" }, "optionalPeers": ["@auth/core", "jose", "oslo", "react"] }],
 
     "@mail/cli/@platform/cli-kit": ["@platform/cli-kit@file:platform/packages/cli-kit", { "devDependencies": { "@types/bun": "latest", "@types/node": "^22.0.0", "typescript": "^5.7.2" } }],
+
+    "@mail/cli/@platform/fence": ["@platform/fence@file:platform/packages/fence", { "devDependencies": { "typescript": "^5.7.2" } }],
 
     "@mail/cli/@platform/snippets": ["@platform/snippets@file:platform/packages/snippets", { "dependencies": { "@platform/cli-kit": "file:../cli-kit" }, "devDependencies": { "@types/bun": "latest", "@types/node": "^22.0.0", "typescript": "^5.7.2" } }],
 

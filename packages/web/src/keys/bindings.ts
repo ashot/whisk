@@ -88,6 +88,7 @@ export const BINDINGS: Binding[] = [
   { keys: "g d", context: READING, group: "Go to", description: "Drafts", handler: go("drafts") },
   { keys: "g t", context: READING, group: "Go to", description: "Sent", handler: go("sent") },
   { keys: "g a", context: READING, group: "Go to", description: "Archive", handler: go("archive") },
+  { keys: "g m", context: READING, group: "Go to", description: "All Mail", handler: go("all") },
   { keys: "g #", context: READING, group: "Go to", description: "Trash", handler: go("trash") },
   { keys: "g !", context: READING, group: "Go to", description: "Spam", handler: go("spam") },
   { keys: "g c", context: READING, group: "Go to", description: "Sweep by lane", handler: go("sweep") },

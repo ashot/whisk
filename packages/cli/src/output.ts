@@ -1,11 +1,12 @@
-import type { Account, Draft, Message, Reminder, Thread } from "@mail/shared/src/store/types";
+import type { Account, Address, Draft, Message, Reminder, Thread } from "@mail/shared/src/store/types";
 import { relativeDate, fullDate, participantsLine } from "@mail/shared/src/lib/format";
 import { dueLabel } from "@mail/shared/src/lib/times";
 import { categoryMeta } from "@mail/shared/src/lib/categories";
 import { sendAddresses } from "@mail/shared/src/lib/sendAs";
 import { clip, pad } from "@platform/cli-kit/text";
 import { c, fmt, icons } from "./colors";
-import { formatAddress, formatAddresses, messageText, stripQuotes } from "./text";
+import { inlineForeignText } from "@platform/fence";
+import { fenceMessageBody, formatAddress, formatAddresses, messageText, readerIsAgent, stripQuotes } from "./text";
 
 // Every read command prints one of these shapes. Plain text by default,
 // `--json` for machines: the rows exactly as the backend returns them.
@@ -63,15 +64,22 @@ export function printThreads(rows: Thread[], accounts: Account[], opts: { empty?
   for (const t of rows) console.log(threadLine(t, accounts, now));
 }
 
-/** A whole thread, oldest message first. `full` keeps quoted trails. */
+/** A whole thread, oldest message first. `full` keeps quoted trails.
+ *  `agent` (default: stdout is not a terminal) fences each body with its
+ *  sender and escapes the header fields the sender wrote; a person at a
+ *  terminal sees the mail as it is. */
 export function printThread(
   t: Thread,
   messages: Message[],
   accounts: Account[],
-  opts: { full?: boolean; html?: boolean } = {},
+  opts: { full?: boolean; html?: boolean; agent?: boolean } = {},
 ): void {
+  const agent = opts.agent ?? readerIsAgent();
+  const header = agent ? inlineForeignText : (value: string) => value;
+  const address = (a: Address) => header(formatAddress(a));
+  const addresses = (list: readonly Address[] | undefined) => (agent ? (list ?? []).map(address).join(", ") : formatAddresses(list));
   const tag = accountTag(accounts, t.account_id);
-  console.log(`${fmt.bold(t.subject || "(no subject)")}`);
+  console.log(`${fmt.bold(header(t.subject || "(no subject)"))}`);
   console.log(
     fmt.muted(
       `thread ${t.gmail_id} ${icons.dot} ${messages.length} message${messages.length === 1 ? "" : "s"}` +
@@ -83,22 +91,23 @@ export function printThread(
   for (const m of messages) {
     console.log("");
     console.log(`${c.dim}${"─".repeat(60)}${c.reset}`);
-    console.log(`${fmt.muted("From:   ")}${formatAddress(m.from)}${m.is_unread ? "  " + fmt.accent("unread") : ""}`);
-    console.log(`${fmt.muted("To:     ")}${formatAddresses(m.to)}`);
-    if (m.cc?.length) console.log(`${fmt.muted("Cc:     ")}${formatAddresses(m.cc)}`);
-    if (m.reply_to) console.log(`${fmt.muted("Reply-To: ")}${formatAddress(m.reply_to)}`);
+    console.log(`${fmt.muted("From:   ")}${address(m.from)}${m.is_unread ? "  " + fmt.accent("unread") : ""}`);
+    console.log(`${fmt.muted("To:     ")}${addresses(m.to)}`);
+    if (m.cc?.length) console.log(`${fmt.muted("Cc:     ")}${addresses(m.cc)}`);
+    if (m.reply_to) console.log(`${fmt.muted("Reply-To: ")}${address(m.reply_to)}`);
     console.log(`${fmt.muted("Date:   ")}${fullDate(m.date)}`);
     console.log(`${fmt.muted("Message:")}${" "}${fmt.id(m.gmail_id)}`);
     if (m.attachments.length > 0) {
       console.log(
         `${fmt.muted("Files:  ")}${m.attachments
-          .map((a, i) => `${i + 1}. ${a.filename} (${a.mime_type}, ${Math.round(a.size / 1024)} KB)`)
+          .map((a, i) => `${i + 1}. ${header(a.filename)} (${a.mime_type}, ${Math.round(a.size / 1024)} KB)`)
           .join("; ")}`,
       );
     }
     console.log("");
     const text = opts.html && m.body_html ? m.body_html : messageText(m);
-    console.log(opts.full || opts.html ? text : stripQuotes(text) || text);
+    const body = opts.full || opts.html ? text : stripQuotes(text) || text;
+    console.log(agent ? fenceMessageBody(m, body) : body);
   }
 }
 

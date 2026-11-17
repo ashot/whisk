@@ -27,8 +27,9 @@ import { AccountButton } from "../components/AccountMenu";
 import { ThreadRow } from "../components/ThreadRow";
 import { Welcome } from "../components/Welcome";
 
-// The inbox lists (Important, the person's views, Other) lead; the
-// mailbox's own places follow.
+// The inbox lists (Important, the person's views, Other) lead, then All
+// Mail right beside them so the whole mailbox is one tap from the inbox and
+// one tap back; the mailbox's other places follow.
 const PLACES: Array<{ id: ViewId; name: string }> = [
   { id: "starred", name: "Starred" },
   { id: "drafts", name: "Drafts" },
@@ -45,6 +46,7 @@ const EMPTY_LINES: Record<string, [string, string]> = {
   starred: ["No stars.", "Swipe a conversation to keep it close."],
   sent: ["Nothing sent yet.", "Write your first below."],
   archive: ["Archive is empty.", "Swipe right to file things away."],
+  all: ["No mail yet.", "Conversations land here as they sync."],
   trash: ["Trash is empty.", "Nothing rots here."],
   spam: ["No spam.", "The filters are eating well."],
   drafts: ["No drafts.", "Half-written thoughts live here."],
@@ -142,6 +144,7 @@ export default function InboxScreen(): React.ReactElement {
   const views: Array<{ id: ViewId; name: string }> = [
     ...lenses.map((l) => ({ id: lensView(l.id), name: l.name })),
     { id: "other", name: "Other" },
+    { id: "all", name: "All Mail" },
     ...PLACES,
   ];
   const setView = (v: ViewId) => mailStore.getState().setView(v);

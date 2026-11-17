@@ -132,6 +132,9 @@ export function threadInView(
   if (view === "spam") return has(L.SPAM);
   if (view === "archive")
     return !has(L.INBOX) && !has(L.TRASH) && !has(L.SPAM) && !has(L.DRAFT);
+  // All Mail is Gmail's: every conversation outside trash and spam, with no
+  // lens, lane or topic deciding what shows.
+  if (view === "all") return !has(L.TRASH) && !has(L.SPAM);
   if (view === "drafts") return false; // drafts render from the drafts store, not threads
   // Reminder-driven views (later, waiting) and the sweep join against the
   // reminders table in visibleThreads — a thread row alone can't answer them.
@@ -706,6 +709,7 @@ export function viewTitle(view: ViewId, labelName?: string): string {
     drafts: "Drafts",
     sent: "Sent",
     archive: "Archive",
+    all: "All Mail",
     trash: "Trash",
     spam: "Spam",
     sweep: "Sweep",

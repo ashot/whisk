@@ -7,6 +7,7 @@ describe("gmailQueryForList", () => {
   test("views Gmail knows become queries; Whisk-only views do not", () => {
     expect(gmailQueryForList({ ...base, view: "sent" })).toBe("in:sent");
     expect(gmailQueryForList({ ...base, view: "archive" })).toBe("-in:inbox -in:drafts");
+    expect(gmailQueryForList({ ...base, view: "all" })).toBe("-in:drafts");
     expect(gmailQueryForList({ ...base, view: "cat:newsletters" })).toBeNull();
     expect(gmailQueryForList({ ...base, view: "later" })).toBeNull();
   });

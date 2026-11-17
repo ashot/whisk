@@ -87,6 +87,7 @@ const EMPTY_LINES: Record<string, [string, string]> = {
   starred: ["No stars.", "Press s on anything worth keeping close."],
   sent: ["Nothing sent yet.", "Press c to write your first."],
   archive: ["Archive is empty.", "e files things away — gone but not forgotten."],
+  all: ["No mail yet.", "Conversations land here as they sync."],
   trash: ["Trash is empty.", "Nothing rots here."],
   spam: ["No spam.", "The filters are eating well."],
   search: ["No matches.", "Try fewer words."],
@@ -437,7 +438,7 @@ export function ThreadList(): React.ReactElement {
     <div className="list">
       <header className="list-head">
         <NavButton />
-        {inboxList ? (
+        {inboxList || view === "all" ? (
           <h1 className="list-title"><LensTabs view={view} /></h1>
         ) : (
           <h1 className="list-title">{viewTitle(view, view.startsWith("cluster:") ? s.clusters[view.slice(8)]?.name : labelName)}</h1>

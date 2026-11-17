@@ -1,6 +1,7 @@
 import * as path from "path";
 import type { Command } from "commander";
 import { registerSubscriptions, type SubscriptionSource } from "@platform/cli-kit/subscribe";
+import { inlineForeignText } from "@platform/fence";
 import { api } from "@mail/convex/convex/_generated/api";
 import type { Thread } from "@mail/shared/src/store/types";
 import { isOwnAddress } from "@mail/shared/src/lib/sendAs";
@@ -31,7 +32,7 @@ export const mailSubscriptions: SubscriptionSource = {
     const data: Data = { thread: thread!.gmail_id, after: now };
     return {
       key: `thread:${thread!.gmail_id}`,
-      label: `"${thread!.subject || "(no subject)"}"`,
+      label: `"${inlineForeignText(thread!.subject || "(no subject)")}"`,
       read: `whisk read ${thread!.gmail_id}`,
       cursor: now,
       data,

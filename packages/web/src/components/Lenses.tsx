@@ -36,15 +36,17 @@ function SlidersIcon(): React.ReactElement {
 }
 
 /** The inbox's lists as the list's title: Important, each lens, Other,
- *  and the two controls that shape them (tune this one, make another). */
+ *  All Mail (the whole mailbox, one click away and one click back), and
+ *  the two controls that shape the lists (tune this one, make another). */
 export function LensTabs({ view }: { view: ViewId }): React.ReactElement {
   const s = useTracked([(s) => s.clientState, (s) => s.lensPanel, (s) => s.accounts, (s) => s.accountScope]);
   const lenses = inboxLenses(s);
   const [over, setOver] = useState<ViewId | null>(null);
-  const tabs: Array<{ view: ViewId; name: string }> = [...lenses.map((l) => ({ view: lensView(l.id), name: l.name })), { view: "other", name: "Other" }];
+  const tabs: Array<{ view: ViewId; name: string }> = [...lenses.map((l) => ({ view: lensView(l.id), name: l.name })), { view: "other", name: "Other" }, { view: "all", name: "All Mail" }];
   const sorting = Object.values(s.accounts).some((a) => a.lens_sorting && inScope({ account_id: a._id }, s.accountScope));
   // Mail dropped on a tab belongs in that list: Other is out of Important.
-  const accepts = (e: React.DragEvent, target: ViewId) => target !== view && e.dataTransfer.types.includes(MAIL_DRAG);
+  const accepts = (e: React.DragEvent, target: ViewId) => target !== view && target !== "all" && e.dataTransfer.types.includes(MAIL_DRAG);
+  const inAll = view === "all";
   return (
     <span className="lens-tabs" role="tablist" aria-label="Inbox lists">
       {tabs.map((t) => (
@@ -52,8 +54,8 @@ export function LensTabs({ view }: { view: ViewId }): React.ReactElement {
           key={t.view}
           role="tab"
           aria-selected={t.view === view}
-          className={`lens-tab${over === t.view ? " is-drop" : ""}`}
-          onClick={() => (t.view === view ? st().setLensPanel(s.lensPanel === "tune" ? null : "tune") : st().setView(t.view))}
+          className={`lens-tab${t.view === "all" ? " no-drop" : ""}${over === t.view ? " is-drop" : ""}`}
+          onClick={() => (t.view === view ? !inAll && st().setLensPanel(s.lensPanel === "tune" ? null : "tune") : st().setView(t.view))}
           onDragOver={(e) => {
             if (!accepts(e, t.view)) return;
             e.preventDefault();
@@ -72,7 +74,7 @@ export function LensTabs({ view }: { view: ViewId }): React.ReactElement {
           {t.name}
         </button>
       ))}
-      <span className="lens-tools">
+      {!inAll && <span className="lens-tools">
         <button
           className="lens-tool"
           aria-pressed={s.lensPanel === "tune"}
@@ -91,8 +93,8 @@ export function LensTabs({ view }: { view: ViewId }): React.ReactElement {
             +
           </button>
         )}
-      </span>
-      {sorting && (
+      </span>}
+      {sorting && !inAll && (
         <span className="lens-sorting" title="Scoring the inbox again with the mail you placed by hand as examples">
           <span className="spin" aria-hidden /> sorting
         </span>

@@ -1,3 +1,4 @@
+import { escapeForeignControlChars, fenceForeignText } from "@platform/fence";
 import { parseAddresses as parseAddressList } from "@mail/shared/src/lib/compose";
 import type { Address, Message } from "@mail/shared/src/store/types";
 
@@ -79,6 +80,19 @@ export function messageText(m: Pick<Message, "body_text" | "body_html" | "snippe
   if (m.body_text?.trim()) return m.body_text.replace(/\r\n/g, "\n").trim();
   if (m.body_html) return htmlToText(m.body_html);
   return m.snippet;
+}
+
+/** Whether printed mail goes to an agent rather than a person. An agent runs
+ *  whisk through a pipe; a person reads it at a terminal. */
+export function readerIsAgent(): boolean {
+  return process.stdout.isTTY !== true;
+}
+
+/** A message body as an agent reads it: inside the shared untrusted fence,
+ *  named by its sender. Anyone can send mail and the From header is
+ *  unverified, so the fence says exactly that. */
+export function fenceMessageBody(m: Pick<Message, "from">, body: string): string {
+  return fenceForeignText(escapeForeignControlChars(body), `email from ${formatAddress(m.from)} (From header, unverified)`);
 }
 
 /** The new content of a message: quoted trails and signatures dropped. */
