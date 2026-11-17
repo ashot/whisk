@@ -15,7 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@mail/convex/convex/_generated/api";
 import { mailStore } from "@mail/shared/src/store/mailStore";
 import { openThreadScreen } from "../lib/openThread";
-import { inScope, inboxLenses, isInboxList, lensView, viewTitle } from "@mail/shared/src/store/selectors";
+import { inScope, inboxLenses, isInboxList, lensView, remoteQuery, viewTitle } from "@mail/shared/src/store/selectors";
 import type { Draft, Thread, ViewId } from "@mail/shared/src/store/types";
 import { relativeDate } from "@mail/shared/src/lib/format";
 import { useCoarseNow } from "@mail/platform";
@@ -148,6 +148,7 @@ export default function InboxScreen(): React.ReactElement {
     ...PLACES,
   ];
   const setView = (v: ViewId) => mailStore.getState().setView(v);
+  const paged = remoteQuery(view) !== null;
   const st = () => mailStore.getState();
 
   return (
@@ -223,6 +224,9 @@ export default function InboxScreen(): React.ReactElement {
         <EmptyState view={view} />
       ) : (
         <FlatList
+          // One list per view: a switch opens the view at its top instead of
+          // carrying the last view's scroll offset into a shorter list.
+          key={view}
           data={threads}
           keyExtractor={(item) => item._id}
           refreshControl={
@@ -231,6 +235,15 @@ export default function InboxScreen(): React.ReactElement {
           initialNumToRender={14}
           maxToRenderPerBatch={16}
           windowSize={9}
+          // All Mail reaches past the synced window: its end asks Gmail for
+          // the next older page, which lands in the store like synced mail.
+          onEndReached={paged ? () => st().loadMore() : undefined}
+          onEndReachedThreshold={0.6}
+          ListFooterComponent={
+            paged && s.searchStatus === "searching" ? (
+              <ActivityIndicator style={styles.footer} size="small" color={t.inkFaint} />
+            ) : null
+          }
           renderItem={({ item }) => (
             <ThreadRow
               thread={item}
@@ -301,6 +314,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   chipText: { fontSize: 12.5 },
+  footer: { paddingVertical: 18 },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: 6, paddingBottom: 80 },
   emptyTitle: { fontFamily: fonts.uiSemiBold, fontSize: 17 },
   emptySub: { fontFamily: fonts.ui, fontSize: 13.5 },

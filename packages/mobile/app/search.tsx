@@ -116,7 +116,7 @@ export default function SearchScreen(): React.ReactElement {
           data={threads}
           keyExtractor={(item) => item._id}
           keyboardShouldPersistTaps="handled"
-          onEndReached={() => st().loadMoreSearch()}
+          onEndReached={() => st().loadMore()}
           onEndReachedThreshold={0.6}
           ListFooterComponent={
             searching && threads.length > 0 ? (

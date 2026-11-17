@@ -170,6 +170,16 @@ export function threadInView(
   return false;
 }
 
+/** What a view asks Gmail for when its list runs past the local cache: the
+ *  committed query for a search, and the whole mailbox outside trash and
+ *  spam for All Mail (the same line threadInView draws). Null for views that
+ *  end where the cache does. */
+export function remoteQuery(view: ViewId): string | null {
+  if (view.startsWith("search:")) return view.slice("search:".length).trim() || null;
+  if (view === "all") return "-in:trash -in:spam";
+  return null;
+}
+
 const parsedSearch = memoLast((q: string) => parseQuery(q));
 const labelNames = memoLast((labels?: Record<string, Label>) => {
   const names = new Map<string, string>();

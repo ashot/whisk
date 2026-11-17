@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { create } from "mutative";
 import { applyClientPref, mailStore } from "./mailStore";
 import { setRemoteSearch } from "./searchBridge";
-import { inboxLenses, threadDrafts } from "./selectors";
+import { inboxLenses, threadDrafts, visibleRowIds } from "./selectors";
 import { L, type Draft, type Thread } from "./types";
 
 // Integration: the mail store on the REAL platform engine. No dispatch/outbox
@@ -584,17 +584,17 @@ describe("full search paging", () => {
       expect(s.searchStatus).toBe("idle");
       expect(s.focusedThreadId).toBe(pages[0][0]._id);
 
-      mailStore.getState().loadMoreSearch();
+      mailStore.getState().loadMore();
       await settle();
       expect(calls).toHaveLength(9);
       expect(mailStore.getState().searchHits).toHaveLength(45);
 
-      mailStore.getState().loadMoreSearch();
+      mailStore.getState().loadMore();
       await settle();
       expect(mailStore.getState().searchHits).toHaveLength(50);
       expect(mailStore.getState().searchHasMore).toBe(false);
       // Drained: another ask is a no-op.
-      mailStore.getState().loadMoreSearch();
+      mailStore.getState().loadMore();
       await settle();
       expect(calls).toHaveLength(10);
     } finally {
@@ -621,6 +621,101 @@ describe("full search paging", () => {
       expect(s.searchHits).toEqual([]);
       expect(s.searchHasMore).toBe(false);
       expect(Object.keys(s.threads)).toHaveLength(0);
+    } finally {
+      setRemoteSearch(null);
+    }
+  });
+});
+
+describe("All Mail paging", () => {
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const idle = { searchStatus: "idle" as const, searchCursor: null, searchHasMore: false, searchHits: [] };
+
+  test("shows the cache at once, then asks Gmail for the whole mailbox until a screen is full", async () => {
+    const inbox = serverThread([L.INBOX], { last_at: 900 });
+    const archived = serverThread([], { last_at: 800 });
+    const trashed = serverThread([L.TRASH], { last_at: 700 });
+    mailStore.setState(idle);
+    mailStore.getState().syncTable("threads", [inbox, archived, trashed]);
+    const pages: Thread[][] = Array.from({ length: 12 }, (_, p) =>
+      Array.from({ length: 5 }, (_, i) => serverThread([], { last_at: 500 - p * 10 - i })),
+    );
+    const calls: Array<[string, string | null]> = [];
+    setRemoteSearch(async (q, cursor) => {
+      calls.push([q, cursor]);
+      const i = cursor ? Number(cursor) : 0;
+      return { rows: pages[i], cursor: i + 1 < pages.length ? String(i + 1) : null };
+    });
+    try {
+      mailStore.getState().setView("all");
+      // Synchronous: the cached inbox and archive show before any page lands.
+      expect(visibleRowIds(mailStore.getState())).toEqual([inbox._id, archived._id]);
+      expect(mailStore.getState().focusedThreadId).toBe(inbox._id);
+      await settle();
+      const s = mailStore.getState();
+      expect(calls[0]).toEqual(["-in:trash -in:spam", null]);
+      // Two cached + eight pages of five passes the 40-row screen.
+      expect(calls).toHaveLength(8);
+      expect(visibleRowIds(s)).toHaveLength(42);
+      expect(s.searchHasMore).toBe(true);
+      // Older mail lives in the store now, so the inbox round trip is instant
+      // and All Mail still holds it on the way back.
+      mailStore.getState().setView("inbox");
+      expect(visibleRowIds(mailStore.getState())).toEqual([inbox._id]);
+      mailStore.getState().setView("all");
+      expect(visibleRowIds(mailStore.getState())).toHaveLength(42);
+    } finally {
+      setRemoteSearch(null);
+    }
+  });
+
+  test("offline, All Mail is the cache: no toast, and paging stops", async () => {
+    const archived = serverThread([]);
+    mailStore.setState(idle);
+    mailStore.getState().syncTable("threads", [archived]);
+    setRemoteSearch(async () => {
+      throw new Error("offline");
+    });
+    try {
+      mailStore.getState().setView("all");
+      await settle();
+      const s = mailStore.getState();
+      expect(visibleRowIds(s)).toEqual([archived._id]);
+      expect(s.toasts).toEqual([]);
+      expect(s.searchStatus).toBe("idle");
+      expect(s.searchHasMore).toBe(false);
+    } finally {
+      setRemoteSearch(null);
+    }
+  });
+
+  test("a page for an earlier visit or another account scope is dropped", async () => {
+    mailStore.setState(idle);
+    const releases: Array<() => void> = [];
+    const cursors: Array<string | null> = [];
+    setRemoteSearch(
+      (_q, cursor) =>
+        new Promise((resolve) => {
+          cursors.push(cursor);
+          const n = releases.length;
+          releases.push(() => resolve({ rows: [serverThread([])], cursor: `after-${n}` }));
+        }),
+    );
+    try {
+      mailStore.getState().setView("all");
+      mailStore.getState().setView("inbox");
+      mailStore.getState().setView("all");
+      // The second visit starts from the top, not from the first visit's page.
+      expect(cursors).toEqual([null, null]);
+      releases[0]();
+      await settle();
+      expect(mailStore.getState().searchStatus).toBe("searching");
+      expect(Object.keys(mailStore.getState().threads)).toHaveLength(0);
+      releases[1]();
+      await settle();
+      expect(cursors[2]).toBe("after-1");
     } finally {
       setRemoteSearch(null);
     }

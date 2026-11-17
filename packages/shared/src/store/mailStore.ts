@@ -46,14 +46,19 @@ import {
   viewLensId,
   viewSlice,
   isInboxList,
+  remoteQuery,
 } from "./selectors";
 import type { Pile } from "./selectors";
 import { MAIL_PLATFORM_CONFIG } from "./registry";
 import { remoteSearch } from "./searchBridge";
 
-// A committed search keeps paging Gmail on its own until this many rows show;
-// past that, the reader asks for more by scrolling to the end.
+// A view that pages Gmail (a committed search, All Mail) keeps paging on its
+// own until this many rows show; past that, the reader asks for more by
+// scrolling to the end.
 const SEARCH_PAGE_FILL = 40;
+// Bumped whenever the paged list changes (view, account scope), so a page
+// still in flight for the old list never lands in the new one's cursor.
+let pageSeq = 0;
 import { aiAvailable, aiClient } from "./aiBridge";
 import { platformEnv } from "../env";
 import type { CategoryId } from "../lib/categories";
@@ -125,8 +130,10 @@ export type MailState = {
   selected: Record<string, true>;
   searchOpen: boolean;
   searchQuery: string;
-  /** Remote (full-mailbox) search: in flight, the hit ids it has returned so
-   *  far, and the page cursor (null once the mailbox is drained). */
+  /** Gmail paging for the active view (see remoteQuery): in flight, the
+   *  search hit ids returned so far, and the page cursor (null once the
+   *  mailbox is drained). All Mail pages through the same fields; its rows
+   *  land in `threads` and need no hit list. */
   searchStatus: "idle" | "searching";
   searchHits: string[];
   searchCursor: string | null;
@@ -274,8 +281,9 @@ export type MailState = {
   clearSelection: () => void;
   setSearch: (open: boolean, query?: string) => void;
   commitSearch: () => void;
-  /** The next page of whole-mailbox hits for the committed search. */
-  loadMoreSearch: () => void;
+  /** The next page from Gmail for a view that reaches past the local cache:
+   *  the committed search's hits, or All Mail's older conversations. */
+  loadMore: () => void;
   moveMsgFocus: (delta: number) => void;
   toggleMsgExpanded: (gmailId?: string) => void;
   setAllMsgExpanded: (open: boolean) => void;
@@ -922,6 +930,7 @@ const creator = (set: any, get: any) => ({
 
   setView: (view: ViewId) => {
     const s = get();
+    pageSeq++;
     const isSearch = view.startsWith("search:");
     const vis = visibleRowIds({ ...s, activeView: view, searchHits: isSearch ? s.searchHits : [] });
     set({
@@ -936,12 +945,16 @@ const creator = (set: any, get: any) => ({
       // switch should close it too so reading keys stay live.
       searchOpen: false,
       // Remote hits belong to one committed query; leaving search drops them.
-      ...(isSearch ? {} : { searchHits: [], searchStatus: "idle" as const, searchCursor: null, searchHasMore: false }),
+      // All Mail starts its own paging from the top.
+      ...(isSearch ? {} : { searchHits: [], searchStatus: "idle" as const, searchCursor: null, searchHasMore: remoteQuery(view) !== null }),
       focusedThreadId:
         s.focusedThreadId && vis.includes(s.focusedThreadId)
           ? s.focusedThreadId
           : (vis[0] ?? null),
     });
+    // All Mail with less than a screen cached asks Gmail for older mail at
+    // once; a longer list asks when the reader reaches its end.
+    if (!isSearch && remoteQuery(view) && vis.length < SEARCH_PAGE_FILL) get().loadMore();
   },
 
   setAccountScope: (scope: AccountScope) => {
@@ -949,8 +962,11 @@ const creator = (set: any, get: any) => ({
     if (scope !== "all" && !s.accounts[scope]) return;
     if (scope === s.accountScope) return set({ navOpen: false });
     const vis = visibleRowIds({ ...s, accountScope: scope });
+    // The Gmail cursor belongs to the old scope's mailboxes.
+    pageSeq++;
     set({
       accountScope: scope,
+      ...(s.activeView === "all" ? { searchStatus: "idle" as const, searchCursor: null, searchHasMore: true } : {}),
       navOpen: false,
       openThreadId: null,
       selected: {},
@@ -1115,29 +1131,34 @@ const creator = (set: any, get: any) => ({
       searchCursor: null,
       searchHasMore: true,
     });
-    get().loadMoreSearch();
+    get().loadMore();
   },
-  loadMoreSearch: () => {
+  loadMore: () => {
     const s = get();
     const view = s.activeView;
-    if (!view.startsWith("search:")) return;
-    if (s.searchStatus === "searching" || !s.searchHasMore) return;
-    const q = view.slice("search:".length);
+    const q = remoteQuery(view);
+    if (!q || s.searchStatus === "searching" || !s.searchHasMore) return;
+    const seq = pageSeq;
+    const isSearch = view.startsWith("search:");
     set({ searchStatus: "searching" });
-    // Results only apply if this query is still the active view — a stale
-    // response must not repaint a newer search.
+    // A page only applies to the list that asked for it: a stale response
+    // must not repaint a newer search or advance another scope's cursor.
     void remoteSearch(q, s.searchCursor)
       .then((page) => {
-        if (get().activeView !== view) return;
-        // Hits older than the synced window exist nowhere else on the client:
-        // the rows ride with the result and land like any synced page.
+        if (pageSeq !== seq) return;
+        // Rows older than the synced window exist nowhere else on the client:
+        // they ride with the page and land like any synced page, so All Mail
+        // shows them from the store, offline included.
         get().syncTable("threads", page.rows);
-        const seen = new Set(get().searchHits);
-        const hits = [...get().searchHits];
-        for (const row of page.rows) {
-          if (!seen.has(row.gmail_id)) {
-            seen.add(row.gmail_id);
-            hits.push(row.gmail_id);
+        let hits = get().searchHits;
+        if (isSearch) {
+          const seen = new Set(hits);
+          hits = [...hits];
+          for (const row of page.rows) {
+            if (!seen.has(row.gmail_id)) {
+              seen.add(row.gmail_id);
+              hits.push(row.gmail_id);
+            }
           }
         }
         set({
@@ -1152,12 +1173,13 @@ const creator = (set: any, get: any) => ({
         if (!cur.focusedThreadId && vis[0]) set({ focusedThreadId: vis[0] });
         // Keep paging on our own until the list fills a screen; past that the
         // reader scrolls for more.
-        if (cur.searchHasMore && vis.length < SEARCH_PAGE_FILL) get().loadMoreSearch();
+        if (cur.searchHasMore && vis.length < SEARCH_PAGE_FILL) get().loadMore();
       })
       .catch(() => {
-        if (get().activeView !== view) return;
+        if (pageSeq !== seq) return;
         set({ searchStatus: "idle", searchHasMore: false });
-        get().pushToast("Full search failed — showing local matches", "error");
+        // Offline All Mail is the cached mail, which is already on screen.
+        if (isSearch) get().pushToast("Full search failed — showing local matches", "error");
       });
   },
 

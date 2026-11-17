@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMailStore, useTracked } from "../store/mailStore";
 import {
@@ -22,6 +22,7 @@ import {
   viewLensId,
   ALL_INBOX,
   LOOSE_SECTION,
+  remoteQuery,
   type InboxItem,
 } from "../store/selectors";
 import { SectionRow, MoreRow, MutedFoot, GroupToggle, GroupingProgress, type Mailbox } from "./TopicRows";
@@ -408,10 +409,20 @@ export function ThreadList(): React.ReactElement {
       if (focusedIndex >= 0) virtualizer.scrollToIndex(focusedIndex, { align: "auto" });
     }
   }, [s.focusedThreadId, focusedIndex, virtualizer]);
+  // A view switch opens the new list at its top (with the cursor in sight),
+  // not at the offset the last view was scrolled to.
+  useLayoutEffect(() => {
+    if (parentRef.current) parentRef.current.scrollTop = 0;
+    if (focusedIndex > 0) virtualizer.scrollToIndex(focusedIndex, { align: "auto" });
+    // Only the view decides; the cursor effect above handles moves within it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
 
-  // A committed search pages Gmail: reaching the end of what has landed, by
-  // scroll or by cursor, asks for the next page.
+  // A committed search and All Mail page Gmail: reaching the end of what has
+  // landed, by scroll or by cursor, asks for the next page. The live filter
+  // over a view is not that view, so it never pages.
   const isSearch = view.startsWith("search:");
+  const paged = view === s.activeView && remoteQuery(view) !== null;
   const virtualItems = virtualizer.getVirtualItems();
   const lastShown = Math.max(
     virtualItems[virtualItems.length - 1]?.index ?? -1,
@@ -419,10 +430,10 @@ export function ThreadList(): React.ReactElement {
   );
   const nearEnd = items.length > 0 && lastShown >= items.length - 6;
   useEffect(() => {
-    if (isSearch && nearEnd && s.searchHasMore && s.searchStatus === "idle") {
-      useMailStore.getState().loadMoreSearch();
+    if (paged && nearEnd && s.searchHasMore && s.searchStatus === "idle") {
+      useMailStore.getState().loadMore();
     }
-  }, [isSearch, nearEnd, s.searchHasMore, s.searchStatus, items.length]);
+  }, [paged, nearEnd, s.searchHasMore, s.searchStatus, items.length]);
 
   const selCount = Object.keys(s.selected).length;
   const labelName = view.startsWith("label:")
@@ -432,7 +443,8 @@ export function ThreadList(): React.ReactElement {
     : undefined;
 
   if (view === "drafts") return <DraftList />;
-  const searching = isSearch && s.searchStatus === "searching";
+  const loading = paged && s.searchStatus === "searching";
+  const searching = isSearch && loading;
 
   return (
     <div className="list">
@@ -465,6 +477,10 @@ export function ThreadList(): React.ReactElement {
           <div className="empty-state">
             <div className="empty-title">Searching…</div>
             <div className="empty-sub">Asking Gmail for matches beyond the local index.</div>
+          </div>
+        ) : loading ? (
+          <div className="empty-state">
+            <div className="empty-title">Loading…</div>
           </div>
         ) : (
           <EmptyState view={view} />
@@ -518,16 +534,16 @@ export function ThreadList(): React.ReactElement {
               );
             })}
           </div>
-          {isSearch && (searching || s.searchHasMore) && (
+          {paged && (loading || s.searchHasMore) && (
             <div className="list-more">
-              {searching ? (
+              {loading ? (
                 <span className="list-searching">
-                  <span className="spin" aria-hidden /> loading more
+                  <span className="spin" aria-hidden /> {isSearch ? "loading more" : "loading older mail"}
                 </span>
               ) : (
                 <button
                   className="sel-link"
-                  onClick={() => useMailStore.getState().loadMoreSearch()}
+                  onClick={() => useMailStore.getState().loadMore()}
                 >
                   load more
                 </button>
